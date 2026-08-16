@@ -1,0 +1,3637 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>창업 로드맵 — 초등 창업 프로젝트 미션 앱</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #F2F5FC; }
+  * { -webkit-tap-highlight-color: transparent; }
+  #boot-msg { font-family: sans-serif; text-align: center; padding: 60px 20px; color: #1F2A5A; }
+</style>
+<!-- React -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+
+<!-- Firebase (Realtime Database) — cdnjs 출처: 미리보기·학교망에서도 차단 없이 로드 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.15.0/firebase-app-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/12.15.0/firebase-database-compat.min.js"></script>
+</head>
+<body>
+<div id="root"><div id="boot-msg">앱을 불러오는 중입니다…</div></div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════
+   ★ 선생님 설정 구역 — 이 부분만 수정하면 됩니다 ★
+
+   1) Firebase 콘솔(console.firebase.google.com)에서 프로젝트를 만들고
+      [빌드 → Realtime Database → 데이터베이스 만들기]를 실행하세요.
+   2) [프로젝트 설정 → 일반 → 내 앱 → 웹앱 추가]에서 받은
+      firebaseConfig 내용을 아래 FIREBASE_CONFIG 중괄호 안에 붙여넣으세요.
+      (databaseURL 항목이 꼭 포함되어야 합니다)
+   3) Realtime Database → 규칙 탭에 아래를 붙여넣고 게시하세요:
+      {
+        "rules": {
+          "rooms": { "$room": { ".read": true, ".write": true } }
+        }
+      }
+   4) ROOM_ID를 우리 학급만 아는 길고 추측하기 어려운 코드로 바꾸세요.
+      (주소를 아는 사람은 누구나 기록을 볼 수 있으므로, 코드가 곧 열쇠입니다)
+
+   ※ FIREBASE_CONFIG를 비워 두면({}) 각 기기에만 저장되는
+      오프라인 모드로 동작합니다. 로컬 테스트용으로 쓰세요.
+   ═══════════════════════════════════════════════════════════ */
+
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyA4aHIKoPLT_PGymqe8vRJBg9KLKlIIYmQ",
+  authDomain: "youth-startup-a2849.firebaseapp.com",
+  databaseURL: "https://youth-startup-a2849-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "youth-startup-a2849",
+  storageBucket: "youth-startup-a2849.firebasestorage.app",
+  messagingSenderId: "615129192685",
+  appId: "1:615129192685:web:a1f231835fe40b2d1c14e4"
+};
+
+const ROOM_ID = "ys2026-demo-capture-8f3q7t";  // ← 촬영·시연용 빈 방  // ← 학급만의 코드입니다. 원하시면 다른 긴 문구로 바꾸세요.
+</script>
+
+<script>
+/* ── 저장소 어댑터: Firebase → 기기 저장 → 임시 저장 순서로 자동 선택 ── */
+(function () {
+  var mode = "memory";
+  var mem = {};
+  var db = null;
+  try {
+    if (typeof firebase !== "undefined" && FIREBASE_CONFIG && FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.databaseURL) {
+      firebase.initializeApp(FIREBASE_CONFIG);
+      db = firebase.database();
+      mode = "firebase";
+    } else if (typeof firebase === "undefined" && FIREBASE_CONFIG && FIREBASE_CONFIG.apiKey) {
+      console.warn("Firebase 스크립트가 로드되지 않았습니다(네트워크 차단 가능). 기기 저장으로 전환합니다.");
+    }
+  } catch (e) { console.warn("Firebase 초기화 실패 — 기기 저장으로 전환:", e); db = null; }
+  if (!db) {
+    try { localStorage.setItem("__probe", "1"); localStorage.removeItem("__probe"); mode = "local"; }
+    catch (e) { mode = "memory"; }
+  }
+  var P = function (k) { return "rooms/" + ROOM_ID + "/" + k; };
+  window.STORAGE_MODE = mode;
+
+  /* 연결 확인: 5초 안에 응답이 없으면 기기 저장으로 자동 전환
+     (미리보기 등 외부 통신이 막힌 환경에서 무한 대기 방지) */
+  function withTimeout(p, ms) {
+    return Promise.race([p, new Promise(function (_, rej) {
+      setTimeout(function () { rej(new Error("연결 시간 초과")); }, ms);
+    })]);
+  }
+  function fallbackLocal() {
+    db = null;
+    try { localStorage.setItem("__probe", "1"); localStorage.removeItem("__probe"); mode = "local"; }
+    catch (e) { mode = "memory"; }
+    window.STORAGE_MODE = mode;
+  }
+  var ready = (function () {
+    if (!db) return Promise.resolve();
+    return withTimeout(db.ref(P("__ping")).once("value"), 5000)
+      .then(function () { window.STORAGE_MODE = "firebase"; })
+      .catch(function (e) {
+        console.warn("Firebase에 연결할 수 없어 기기 저장으로 전환합니다:", e && e.message);
+        fallbackLocal();
+      });
+  })();
+
+  /* 경로 하나만 골라 값을 넣습니다 (다른 사람이 쓴 부분은 건드리지 않음) */
+  function localMerge(obj, path, value) {
+    var parts = path.split("/"), cur = obj;
+    for (var i = 0; i < parts.length - 1; i++) {
+      if (typeof cur[parts[i]] !== "object" || cur[parts[i]] === null) cur[parts[i]] = {};
+      cur = cur[parts[i]];
+    }
+    if (value === null) delete cur[parts[parts.length - 1]];
+    else cur[parts[parts.length - 1]] = value;
+  }
+
+  window.storage = {
+    /* 바뀐 항목만 저장 — 같은 팀의 다른 기기가 쓴 내용을 덮어쓰지 않습니다 */
+    update: async function (key, patch) {
+      await ready;
+      if (db) { await withTimeout(db.ref(P(key)).update(patch), 8000); return { key: key }; }
+      var raw = mode === "local" ? localStorage.getItem(P(key)) : mem[P(key)];
+      var obj = {};
+      try { obj = raw ? (typeof raw === "string" ? JSON.parse(raw) : raw) : {}; } catch (e) { obj = {}; }
+      Object.keys(patch).forEach(function (pth) { localMerge(obj, pth, patch[pth]); });
+      var out = JSON.stringify(obj);
+      if (mode === "local") localStorage.setItem(P(key), out); else mem[P(key)] = out;
+      return { key: key };
+    },
+    /* 같은 팀 기록이 바뀌면 알려줍니다 (Firebase 연결 시에만 동작) */
+    subscribe: function (key, cb) {
+      var off = function () {};
+      ready.then(function () {
+        if (!db) return;
+        var ref = db.ref(P(key));
+        var handler = ref.on("value", function (snap) { cb(snap.val()); });
+        off = function () { ref.off("value", handler); };
+      });
+      return function () { off(); };
+    },
+    get: async function (key) {
+      await ready;
+      if (db) {
+        var snap = await withTimeout(db.ref(P(key)).once("value"), 8000);
+        if (snap.val() == null) throw new Error("not found");
+        return { value: snap.val() };
+      }
+      var v = mode === "local" ? localStorage.getItem(P(key)) : (P(key) in mem ? mem[P(key)] : null);
+      if (v == null) throw new Error("not found");
+      return { value: v };
+    },
+    set: async function (key, value) {
+      await ready;
+      if (db) { await withTimeout(db.ref(P(key)).set(value), 8000); }
+      else {
+        var out = typeof value === "string" ? value : JSON.stringify(value);
+        if (mode === "local") localStorage.setItem(P(key), out); else mem[P(key)] = out;
+      }
+      return { key: key };
+    },
+    delete: async function (key) {
+      await ready;
+      if (db) { await withTimeout(db.ref(P(key)).remove(), 8000); }
+      else if (mode === "local") { localStorage.removeItem(P(key)); }
+      else { delete mem[P(key)]; }
+      return { key: key };
+    }
+  };
+})();
+</script>
+
+<script>
+const {
+  useState,
+  useEffect,
+  useRef,
+  useMemo
+} = React;
+
+/* ──────────────────────────────────────────────
+   창업 로드맵 — 초등 창업 프로젝트 미션 앱 (학교 버전 v2)
+   학생 모드: 팀별 미션 진행 · 도장 · 힌트 엔진 · 피칭 조립
+   편집자 모드: PIN 진입 · 내용/이미지 수정 · 팀 현황 · 설정
+   저장: window.storage (공유 데이터 — 모든 기기에서 동일 내용)
+   ────────────────────────────────────────────── */
+
+const INK = "#1F2A5A";
+const PAPER = "#F2F5FC";
+const PRIMARY = "#4F46E5";
+const GOLD = "#F5A623";
+const GREEN = "#18A075";
+const RED = "#E8556D";
+const SKY = "#E9EEFF";
+const FONT = "'Pretendard','Noto Sans KR','Apple SD Gothic Neo','Malgun Gothic',sans-serif";
+const card = (extra = {}) => ({
+  background: "#fff",
+  border: `2px solid ${INK}`,
+  borderRadius: 16,
+  boxShadow: `4px 4px 0 ${INK}`,
+  ...extra
+});
+const ROULETTE = ["비 오는 날 학교에서 가장 불편한 것은?", "1학년 동생이 우리 학교에서 제일 어려워할 일은?", "급식 시간에 '아 짜증나' 했던 순간은?", "잃어버리거나 까먹어서 곤란했던 물건은?", "쉬는 시간 10분이 부족하다고 느낀 적은 언제?", "학원 갈 때 가장 귀찮은 일은?", "방 정리에서 제일 하기 싫은 부분은?", "숙제할 때 자꾸 방해되는 것은?", "친구와 약속을 잡을 때 불편한 점은?", "체육 시간 전후로 불편한 것은?", "우리 반 사물함의 문제점은?", "할머니, 할아버지가 스마트폰으로 힘들어하는 일은?"];
+const DEFAULT_CONFIG = {
+  orgName: "",
+  // 운영 센터 이름 (앱 상단에 고정 표시)
+  sites: ["SW미래채움 초등학교", "SW미래채움 제주센터"],
+  // 촬영·시연용 예시 목록 (편집자 모드에서 바꿀 수 있습니다)
+  pin: "0000",
+  classes: ["1반", "2반", "3반"],
+  teamCount: 6,
+  // 반별 팀 수
+  explorerCount: 18,
+  // 반별 개인 체험 슬롯 (16명 + 담임 + 시연)
+  appTitle: "창업 로드맵",
+  levels: [{
+    min: 0,
+    icon: "🪑",
+    name: "내 방 책상 창업"
+  }, {
+    min: 3,
+    icon: "🏢",
+    name: "첫 사무실"
+  }, {
+    min: 6,
+    icon: "🤝",
+    name: "첫 손님"
+  }, {
+    min: 9,
+    icon: "🎪",
+    name: "박람회 진출"
+  }, {
+    min: 12,
+    icon: "🏆",
+    name: "상장 기업"
+  }],
+  roulette: ROULETTE,
+  missions: {
+    m0: {
+      title: "로드맵 투어",
+      badge: "1일차 · 1교시",
+      kind: "tour",
+      briefing: "미션을 시작하기 전에, 우리가 2주 동안 갈 길 전체를 먼저 봅니다. 끝 장면(박람회 부스)을 보면 오늘 무엇을 해야 하는지 보여요.",
+      image: "",
+      cards: [{
+        h: "🔬 발명가 vs 💼 창업가",
+        t: "발명가의 질문은 하나예요. '이걸 만들 수 있을까?'\n창업가의 질문은 두 개 더 있어요. '누가 필요로 할까?' 그리고 '어떻게 알릴까?'\n\n이번 프로젝트에서 여러분은 둘 다 되어 봅니다. 프로토타입 만들기 = 발명가의 일. 고객 찾기·홍보·박람회 = 창업가의 일!"
+      }, {
+        h: "🎪 다음 주, 우리 부스의 모습",
+        t: "박람회 날 여러분 부스 책상 위에는 이것들이 있어야 해요.\n① 프로토타입(보고 만질 수 있는 시제품)\n② 부스 포스터\n③ 나눠줄 전단지\n④ 홈페이지 QR코드\n⑤ (도전) 홍보 동영상\n\n이 다섯 가지를 만드는 것이 우리의 여정입니다."
+      }, {
+        h: "🗺️ 거꾸로 지도",
+        t: "부스를 만들려면 거꾸로 가 봅시다.\n홍보물을 만들려면 → 프로토타입이 있어야 하고\n프로토타입을 만들려면 → 아이디어가 있어야 하고\n아이디어를 내려면 → 고객을 알아야 하고\n고객을 찾으려면 → 문제를 발견해야 해요.\n\n그래서 오늘은 문제 발견부터 시작합니다. 초록 미션은 오늘, 노랑 미션은 이번 주, 파랑 미션은 다음 주!"
+      }],
+      quiz: ["문제 발견", "고객 찾기", "프로토타입", "홍보", "박람회"]
+    },
+    m1: {
+      title: "불편함 탐정",
+      badge: "1일차 · 1교시",
+      kind: "qa",
+      briefing: "진짜 창업가는 대단한 발명이 아니라 '아, 불편해!'에서 시작합니다. 우리 주변의 불편함을 수사하세요.",
+      questions: [{
+        id: "place",
+        type: "chips",
+        q: "어디에서 불편함을 찾아볼까요? (여러 곳 선택 가능)",
+        options: ["교실", "급식실", "복도", "화장실", "운동장", "도서관", "집", "학원", "등굣길"],
+        multi: true,
+        hints: ["오늘 아침 학교 올 때 5초라도 '아 짜증나' 했던 곳이 있나요?", "쉬는 시간에 줄 서서 기다린 곳이 있나요?"]
+      }, {
+        id: "list",
+        type: "pick3",
+        q: "그 장소에서 겪은 불편함을 3가지 적고, 가장 해결하고 싶은 것 하나에 ★을 누르세요.",
+        hints: ["작은 불편함도 좋아요. '매번 조금씩 귀찮은 일'이 최고의 재료예요.", "친구·동생·부모님이 불편해하는 것도 됩니다."]
+      }],
+      check: ["이 문제를 우리 말고도 겪는 사람이 있다", "일주일 안에 눈에 보이는 형태로 만들 수 있다"]
+    },
+    m2: {
+      title: "고객 찾기",
+      badge: "1일차 · 1교시",
+      kind: "qa",
+      briefing: "발명가는 물건에서 멈추지만, 창업가는 사람까지 갑니다. 우리 제품을 진짜로 쓸 사람을 찾아보세요.",
+      questions: [{
+        id: "who",
+        type: "text",
+        q: "누가 쓸까요?",
+        ph: "예: 매일 급식 순서가 궁금한 6학년 친구들",
+        hints: ["그 문제를 가장 자주 겪는 사람은 누구인가요?", "나이·학년·상황을 붙이면 더 또렷해져요."]
+      }, {
+        id: "when",
+        type: "text",
+        q: "언제 쓸까요?",
+        ph: "예: 4교시 끝나기 10분 전",
+        hints: ["하루 중 그 불편함이 터지는 순간은 언제인가요?"]
+      }, {
+        id: "why",
+        type: "long",
+        q: "왜 꼭 필요할까요?",
+        ph: "이게 있으면 무엇이 좋아지나요?",
+        hints: ["이게 없을 때 지금은 어떻게 참고 있나요? 그 방법의 아쉬운 점은?"]
+      }],
+      check: ["고객이 '우리 반의 누구'처럼 구체적으로 떠오른다"]
+    },
+    m3: {
+      title: "아이디어 공장",
+      badge: "1일차 · 2교시",
+      kind: "qa",
+      briefing: "문제와 고객이 정해졌으니 이제 해결 아이디어! 이름은 30초만 고민하세요. 제품 이름이 곧 회사 이름이어도 좋아요.",
+      questions: [{
+        id: "how",
+        type: "long",
+        q: "이 문제를 어떻게 해결할 건가요?",
+        ph: "우리 제품/서비스가 하는 일을 적어 보세요",
+        hints: ["문제가 생기는 '순간'에 끼어들어 무엇을 해 주면 될까요?", "비슷한 문제를 다른 곳에서는 어떻게 풀고 있나요? 우리 상황에 맞게 바꿔 봐요."]
+      }, {
+        id: "name",
+        type: "text",
+        q: "제품 이름 (30초 타이머! 나중에 바꿔도 됩니다)",
+        ph: "예: 톡톡 급식 알리미",
+        hints: ["하는 일 + 재미있는 소리. 예: 척척-, 콕콕-, 슝-"]
+      }, {
+        id: "special",
+        type: "text",
+        q: "다른 것보다 특별한 점 한 가지는?",
+        ph: "이것 하나는 우리가 최고!",
+        hints: ["더 빠르다 / 더 쉽다 / 더 재미있다 / 더 정확하다 — 하나만 고르세요."]
+      }, {
+        id: "type",
+        type: "chips",
+        q: "우리 제품은 어떤 모습인가요?",
+        options: ["🧸 물건", "📱 앱·서비스", "🎲 게임"],
+        multi: false,
+        hints: ["박람회에서 손님이 '보고 만질 것'이 무엇일지 상상해 보세요."]
+      }],
+      check: ["가치 제안 문장을 소리 내어 읽어 보았다"]
+    },
+    m4: {
+      title: "역할 분담",
+      badge: "1일차 · 2교시",
+      kind: "roles",
+      briefing: "모두가 CEO지만, 담당은 나눕니다. 일주일 동안 각자 책임질 영역을 정하세요. 3명 팀은 한 명이 두 역할을 맡습니다. 담당이 달라도 서로 돕는 것이 규칙!",
+      roles: [{
+        id: "r1",
+        name: "제품 개발 담당",
+        desc: "프로토타입 완성 책임 (W1)"
+      }, {
+        id: "r2",
+        name: "디자인 담당",
+        desc: "부스 포스터 · 전단지 (W2, W3)"
+      }, {
+        id: "r3",
+        name: "웹 · 영상 담당",
+        desc: "홈페이지 · 설명서 · 동영상 (W4, W5)"
+      }, {
+        id: "r4",
+        name: "홍보 · 발표 담당",
+        desc: "한 줄 카피 · 피칭 연습 · 기록"
+      }],
+      check: ["모든 역할에 이름이 적혀 있다", "각자 자기 역할의 주중 미션이 무엇인지 말할 수 있다"]
+    },
+    m5: {
+      title: "Canva AI 부트캠프",
+      badge: "1일차 · 2교시",
+      kind: "boot",
+      briefing: "Canva는 익숙하죠? 오늘은 안 써 본 두 가지 — Magic Write(글쓰기 AI)와 Canva 코드(앱 만들기 AI)를 훈련합니다. 규칙은 하나: AI가 만든 것은 반드시 읽고 · 고르고 · 고친다!",
+      steps: [{
+        h: "훈련 ① Magic Write — 홍보 문구",
+        t: "아래 프롬프트의 빈칸을 채워 Magic Write에 넣고, 문구 3개를 받아 1개를 고른 뒤 1군데 이상 직접 고치세요.",
+        prompt: "초등학생에게 [우리 제품 이름]을 소개하는 짧고 신나는 홍보 문구 3개를 써 줘. 이 제품은 [문제]를 해결해 줘."
+      }, {
+        h: "훈련 ② Canva 코드 — 미니 앱 화면",
+        t: "앱·서비스 팀은 필수, 다른 팀도 체험! 아래 프롬프트로 앱 화면을 생성하고, 마음에 안 드는 점 1가지를 찾아 프롬프트를 고쳐 다시 생성하세요.",
+        prompt: "초등학생이 쓰는 [제품 이름] 앱의 첫 화면을 만들어 줘. 큰 버튼, 밝은 색, [핵심 기능] 버튼이 가운데 있게."
+      }, {
+        h: "훈련 ③ 공유 링크",
+        t: "작업물의 공유 링크를 만들어 보세요. 이 링크가 있으면 이번 주에 집 컴퓨터나 스마트폰에서도 이어서 작업할 수 있습니다.",
+        prompt: ""
+      }],
+      check: ["Magic Write 문구를 고르고 직접 고쳐 보았다", "Canva 코드로 화면을 생성하고 프롬프트를 수정해 재생성했다", "공유 링크를 만들어 팀 전원이 열어 보았다"]
+    },
+    m6: {
+      title: "프로토타입 시동",
+      badge: "1일차 · 2교시 마무리",
+      kind: "boot",
+      briefing: "오늘의 목표는 완성이 아니라 시동입니다. 오늘 0에서 1을 만들면, 이번 주에 1에서 10을 만들 수 있어요. 유형별 최소 목표 하나만 만들고 하교!",
+      steps: [{
+        h: "🧸 물건 팀",
+        t: "Canva로 제품 이미지 1장 + 종이 모형 계획 메모",
+        prompt: ""
+      }, {
+        h: "📱 앱·서비스 팀",
+        t: "Canva 코드로 첫 화면 1장 (부트캠프 ②에서 만든 것을 발전시켜도 OK)",
+        prompt: ""
+      }, {
+        h: "🎲 게임 팀",
+        t: "보드판 초안 1장 (출발·도착·이벤트 칸 배치)",
+        prompt: ""
+      }],
+      check: ["최소 목표 1개를 만들었다", "공유 링크를 팀 전원이 가지고 있다", "이번 주 미션 보드를 함께 확인했다"]
+    },
+    w1: {
+      title: "프로토타입 완성",
+      badge: "🔴 필수",
+      kind: "week",
+      briefing: "1일차에 시동을 건 프로토타입을 완성하세요. 박람회에서 손님이 직접 보고 만질 수 있어야 합니다.",
+      check: ["손님이 30초 안에 무엇인지 알아볼 수 있다", "직접 만지거나 체험할 부분이 있다", "제품 이름이 어딘가에 적혀 있다"],
+      honest: false
+    },
+    w2: {
+      title: "부스 포스터",
+      badge: "🔴 필수",
+      kind: "week",
+      briefing: "박람회 책상에 붙일 포스터 1장. 제품 이름 + 한 줄 카피 + 이미지가 핵심입니다. 완성하면 '인쇄 요청'에 체크하세요 — 선생님이 출력해 드립니다.",
+      questions: [{
+        id: "copy",
+        type: "text",
+        q: "우리 제품의 한 줄 카피",
+        ph: "예: 기다림 끝! 내 차례가 저절로 온다",
+        hints: ["고객이 가장 반할 장점 하나만 큰 소리로 외쳐 보세요.", "Magic Write에게 3개를 받아 제일 좋은 것을 고르고 고치세요."]
+      }],
+      check: ["멀리서도 제품 이름이 읽힌다", "한 줄 카피가 들어갔다", "인쇄 요청 완료(선생님께 전달)"],
+      honest: true
+    },
+    w3: {
+      title: "전단지",
+      badge: "🟡 권장",
+      kind: "week",
+      briefing: "부스 방문객에게 나눠줄 전단지. 앞면은 카피와 이미지, 뒷면은 사용법 3단계.",
+      check: ["앞면: 이름 · 카피 · 이미지", "뒷면: 사용법이 3단계로 정리됨", "인쇄 요청 완료"],
+      honest: true
+    },
+    w4: {
+      title: "홈페이지 + 설명서",
+      badge: "🟡 권장",
+      kind: "week",
+      briefing: "Canva 웹사이트로 3페이지를 만드세요: ① 제품 소개 ② 사용법·설명서 ③ 우리 팀. 완성하면 QR코드를 만들어 링크를 등록하세요.",
+      check: ["소개 페이지 완성", "설명서 페이지: 처음 보는 사람도 따라 할 수 있다", "QR코드 생성 완료"],
+      honest: true
+    },
+    w5: {
+      title: "홍보 동영상",
+      badge: "🟢 도전",
+      kind: "week",
+      briefing: "30초 내외의 홍보 영상. 피칭 대본(부스 준비 미션에서 자동 완성)을 내레이션으로 그대로 써도 좋아요.",
+      check: ["30초 내외로 완성", "제품 이름과 카피가 영상에 나온다"],
+      honest: true
+    },
+    wb: {
+      title: "회사명 · 로고 · 격언",
+      badge: "⭐ 보너스",
+      kind: "week",
+      briefing: "여유가 있다면! 팀 번호 대신 쓸 정식 회사명과 로고, 우리 회사의 격언을 정하세요. 없어도 박람회 진행에는 문제 없습니다.",
+      questions: [{
+        id: "name",
+        type: "text",
+        q: "우리 회사 이름",
+        ph: "비워 두면 '팀 번호' 회사로 진행돼요",
+        hints: ["제품 이름을 그대로 회사 이름으로 써도 됩니다."]
+      }, {
+        id: "motto",
+        type: "text",
+        q: "우리 회사의 격언",
+        ph: "예: 처음부터 완벽하지 않아도, 고치면 된다!",
+        hints: ["활동지 ②에서 만든 격언을 가져와도 좋아요."]
+      }],
+      check: ["로고를 Canva로 만들었다 (선택)"],
+      honest: false
+    },
+    d1: {
+      title: "부스 오픈 준비",
+      badge: "2일차 · 3교시",
+      kind: "booth",
+      briefing: "오늘은 만들지 않습니다. 배치하고, 연습하고, 점검만! 홍보물과 실물이 다르면 디지털로 고치지 말고 펜과 스티커로 고치세요.",
+      check: ["프로토타입 세팅 완료", "포스터 부착 완료", "전단지 · QR 배치 완료", "정직한 홍보 점검: 홍보물에 적힌 것이 전부 실물에 있다", "1분 피칭을 2번 연습했다"]
+    },
+    d2: {
+      title: "창업박람회",
+      badge: "2일차 · 4교시 · 체육관",
+      kind: "expo",
+      briefing: "드디어 선택받는 날! 우리 부스를 지키는 사람과 다른 부스를 탐방하는 사람으로 나눠 움직이세요. 다른 부스 3곳 이상을 방문하고 리뷰를 남기면 방문 도장을 받습니다.",
+      retro: ["AI 인턴이 한 것과 우리가 직접 한 것은 무엇인가요?", "이번 프로젝트에서 나는 언제 발명가였고, 언제 창업가였나요?"]
+    }
+  }
+};
+const DAY1 = ["m0", "m1", "m2", "m3", "m4", "m5", "m6"];
+const WEEK = ["w1", "w2", "w3", "w4", "w5", "wb"];
+const DAY2 = ["d1", "d2"];
+/* 미션 표시 번호 — 수업과정안 참조용 (로드맵 투어는 준비 미션 00) */
+const MISSION_NO = { m0: "00", m1: "01", m2: "02", m3: "03", m4: "04", m5: "05", m6: "06", w1: "07", w2: "08", w3: "09", w4: "10", w5: "11", wb: "12", d1: "13", d2: "14" };
+const mnum = id => MISSION_NO[id] ? `미션 ${MISSION_NO[id]}` : "";
+const LEVELS = [{
+  min: 0,
+  name: "내 방 책상 창업",
+  icon: "🪑"
+}, {
+  min: 3,
+  name: "첫 사무실",
+  icon: "🏢"
+}, {
+  min: 6,
+  name: "첫 손님",
+  icon: "🤝"
+}, {
+  min: 9,
+  name: "박람회 진출",
+  icon: "🎪"
+}, {
+  min: 12,
+  name: "상장 기업",
+  icon: "🏆"
+}];
+
+/* ── storage helpers ── */
+/* 학교·기관까지 구분하는 저장 키
+   - 학교 목록이 비어 있으면(si == null) 예전과 똑같은 키를 씁니다 → 기존 기록 그대로 유지
+   - 학교를 쓰면 startup-team-s0-1-2 (0번 학교 · 1번 반 · 2팀) 형태가 됩니다 */
+const sitePrefix = si => si == null || si === "" ? "" : `s${si}-`;
+const teamKey = (si, ci, n) => `startup-team-${sitePrefix(si)}${ci}-${n}`;
+const exKey = (si, ci, n) => `startup-ex-${sitePrefix(si)}${ci}-${n}`;
+const siteList = config => config.sites && config.sites.length ? config.sites.map((_, i) => i) : [null];
+const siteName = (config, si) => si == null ? "" : (config.sites || [])[si] || "";
+
+async function sGet(key) {
+  try {
+    const r = await window.storage.get(key, true);
+    if (!r) return null;
+    return typeof r.value === "string" ? JSON.parse(r.value) : r.value;
+  } catch {
+    return null;
+  }
+}
+async function sSet(key, obj) {
+  try {
+    await window.storage.set(key, obj, true);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function sPatch(key, patch) {
+  try {
+    await window.storage.update(key, patch);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* ═══ 모둠 실시간 협업 ═══
+   한 팀에 여러 기기가 동시에 들어와도 서로의 기록을 덮어쓰지 않도록
+   ① 바뀐 항목만 저장하고 ② 다른 기기의 변경을 실시간으로 받아옵니다. */
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const SYNC_BRANCHES = ["stamps", "answers", "checks", "roles", "retro"];
+const ITEM_BRANCHES = ["reviews", "prompts"];
+const clone = o => JSON.parse(JSON.stringify(o == null ? null : o));
+
+/* 저장된 값(예전 배열 / 새 방식 객체) → 화면용 배열 */
+const toList = v => !v ? [] : Array.isArray(v)
+  ? v.filter(Boolean).map((x, i) => ({ ...x, _id: x._id || `old${i}` }))
+  : Object.keys(v).map(k => ({ ...v[k], _id: k }));
+
+function normalizeProgress(raw) {
+  const p = raw || {};
+  return {
+    stamps: p.stamps || {}, answers: p.answers || {}, checks: p.checks || {},
+    roles: p.roles || {}, retro: p.retro || {},
+    reviews: toList(p.reviews), prompts: toList(p.prompts),
+    pw: p.pw || null, updatedAt: p.updatedAt || null
+  };
+}
+
+/* 이전 저장 시점과 지금을 비교해 바뀐 항목만 골라냅니다 */
+function collectDiff(base, next) {
+  const out = {};
+  const walk = (a, b, prefix) => {
+    const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+    keys.forEach(k => {
+      const av = (a || {})[k], bv = (b || {})[k];
+      if (bv && typeof bv === "object" && !Array.isArray(bv)) walk(av || {}, bv, prefix + k + "/");
+      else if (JSON.stringify(av) !== JSON.stringify(bv)) out[prefix + k] = bv === undefined ? null : bv;
+    });
+  };
+  SYNC_BRANCHES.forEach(br => walk((base || {})[br], (next || {})[br], br + "/"));
+  ITEM_BRANCHES.forEach(br => {
+    const had = new Set(((base || {})[br] || []).map(x => x._id));
+    ((next || {})[br] || []).forEach(item => {
+      if (had.has(item._id)) return;
+      const body = { ...item };
+      delete body._id;
+      out[`${br}/${item._id}`] = body;
+    });
+  });
+  if ((next || {}).pw && (next || {}).pw !== (base || {}).pw) out.pw = next.pw;
+  return out;
+}
+
+/* 서버에서 온 내용을 화면에 합칩니다.
+   내가 방금 고쳐 아직 저장되지 않은 칸은 내 것을 지킵니다. */
+function mergeRemote(local, remote, base) {
+  const out = { ...local };
+  const mergeTree = (lo, re, ba) => {
+    const res = {};
+    const keys = new Set([...Object.keys(lo || {}), ...Object.keys(re || {}), ...Object.keys(ba || {})]);
+    keys.forEach(k => {
+      const lv = (lo || {})[k], rv = (re || {})[k], bv = (ba || {})[k];
+      if ((lv && typeof lv === "object" && !Array.isArray(lv)) || (rv && typeof rv === "object" && !Array.isArray(rv))) {
+        res[k] = mergeTree(lv || {}, rv || {}, bv || {});
+      } else if (JSON.stringify(lv) !== JSON.stringify(bv)) {
+        res[k] = lv; // 아직 저장 안 된 내 입력 — 지킴
+      } else if (rv !== undefined) {
+        res[k] = rv; // 친구가 쓴 내용 — 받아옴
+      }
+    });
+    return res;
+  };
+  SYNC_BRANCHES.forEach(br => { out[br] = mergeTree(local[br], remote[br], (base || {})[br]); });
+  ITEM_BRANCHES.forEach(br => {
+    const map = {};
+    (remote[br] || []).forEach(x => { map[x._id] = x; });
+    (local[br] || []).forEach(x => { if (!map[x._id]) map[x._id] = x; });
+    out[br] = Object.values(map).sort((a, b) => String(a.ts || "").localeCompare(String(b.ts || "")));
+  });
+  out.pw = local.pw || remote.pw || null;
+  return out;
+}
+
+/* ── 백업·내보내기 헬퍼 ── */
+function downloadFile(content, filename, type) {
+  const blob = new Blob([content], {
+    type
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 500);
+}
+const dateStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}_${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
+};
+const deepMerge = (base, over) => {
+  if (!over) return base;
+  const out = Array.isArray(base) ? [...base] : {
+    ...base
+  };
+  for (const k of Object.keys(over)) {
+    if (over[k] && typeof over[k] === "object" && base[k] && typeof base[k] === "object" && !Array.isArray(over[k])) out[k] = deepMerge(base[k], over[k]);else out[k] = over[k];
+  }
+  return out;
+};
+
+/* ── tiny UI pieces ── */
+function Btn({
+  children,
+  onClick,
+  tone = "primary",
+  disabled,
+  small,
+  style
+}) {
+  const bg = disabled ? "#C6CCE0" : tone === "primary" ? PRIMARY : tone === "gold" ? GOLD : tone === "green" ? GREEN : tone === "red" ? RED : "#fff";
+  const color = tone === "ghost" ? INK : "#fff";
+  return /*#__PURE__*/React.createElement("button", {
+    onClick: onClick,
+    disabled: disabled,
+    style: {
+      fontFamily: FONT,
+      background: bg,
+      color,
+      border: `2px solid ${INK}`,
+      borderRadius: 12,
+      padding: small ? "6px 12px" : "10px 18px",
+      fontWeight: 800,
+      fontSize: small ? 13 : 15,
+      cursor: disabled ? "default" : "pointer",
+      boxShadow: disabled ? "none" : `3px 3px 0 ${INK}`,
+      ...style
+    }
+  }, children);
+}
+function Stamp({
+  done
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 44,
+      height: 44,
+      borderRadius: "50%",
+      flexShrink: 0,
+      border: `2px dashed ${done ? GOLD : "#B9C1D9"}`,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      background: done ? "#FFF4DC" : "#F6F8FE",
+      transform: done ? "rotate(-8deg)" : "none",
+      transition: "all .3s"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 20
+    }
+  }, done ? "✅" : "⬜"));
+}
+function Field({
+  q,
+  value,
+  onChange,
+  ph,
+  long
+}) {
+  const common = {
+    fontFamily: FONT,
+    width: "100%",
+    boxSizing: "border-box",
+    fontSize: 15,
+    border: `2px solid ${INK}`,
+    borderRadius: 10,
+    padding: "10px 12px",
+    background: "#FDFDFF"
+  };
+  return long ? /*#__PURE__*/React.createElement("textarea", {
+    rows: 3,
+    value: value || "",
+    placeholder: ph,
+    onChange: e => onChange(e.target.value),
+    style: common
+  }) : /*#__PURE__*/React.createElement("input", {
+    value: value || "",
+    placeholder: ph,
+    onChange: e => onChange(e.target.value),
+    style: common
+  });
+}
+function CopyBox({
+  text
+}) {
+  const [ok, setOk] = useState(false);
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: SKY,
+      border: `2px dashed ${PRIMARY}`,
+      borderRadius: 10,
+      padding: 10,
+      marginTop: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      whiteSpace: "pre-wrap",
+      userSelect: "all"
+    }
+  }, text), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 6,
+      display: "flex",
+      gap: 8,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    small: true,
+    tone: "ghost",
+    onClick: async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        setOk(true);
+        setTimeout(() => setOk(false), 1500);
+      } catch {
+        setOk("manual");
+        setTimeout(() => setOk(false), 2500);
+      }
+    }
+  }, "프롬프트 복사"), ok === true && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: GREEN,
+      fontWeight: 700
+    }
+  }, "복사 완료!"), ok === "manual" && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: RED,
+      fontWeight: 700
+    }
+  }, "글자를 길게 눌러 직접 복사하세요"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: "#7A84A8"
+    }
+  }, "[대괄호]는 우리 팀 내용으로 바꾸기!")));
+}
+
+/* ── 힌트 엔진 ── */
+function HintEngine({
+  hints = [],
+  roulette
+}) {
+  const [step, setStep] = useState(0);
+  const [roll, setRoll] = useState("");
+  if (step === 0) return /*#__PURE__*/React.createElement("button", {
+    onClick: () => setStep(1),
+    style: {
+      fontFamily: FONT,
+      background: "none",
+      border: "none",
+      color: PRIMARY,
+      fontWeight: 800,
+      fontSize: 13,
+      cursor: "pointer",
+      padding: 0,
+      marginTop: 6
+    }
+  }, "🆘 막혔어요");
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 8,
+      background: "#FFF8E9",
+      border: `2px solid ${GOLD}`,
+      borderRadius: 10,
+      padding: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 900,
+      color: "#9A6B00",
+      marginBottom: 4
+    }
+  }, "힌트 — 답이 아니라 더 작은 질문이에요"), hints.slice(0, step).map((h, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      fontSize: 13,
+      marginBottom: 4
+    }
+  }, "💡 ", h)), roll && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      marginBottom: 4
+    }
+  }, "🎰 ", roll), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      flexWrap: "wrap",
+      marginTop: 6
+    }
+  }, step < hints.length && /*#__PURE__*/React.createElement(Btn, {
+    small: true,
+    tone: "gold",
+    onClick: () => setStep(step + 1)
+  }, "힌트 더 보기"), /*#__PURE__*/React.createElement(Btn, {
+    small: true,
+    tone: "ghost",
+    onClick: () => setRoll(roulette[Math.floor(Math.random() * roulette.length)])
+  }, "🎰 질문 룰렛"), /*#__PURE__*/React.createElement(Btn, {
+    small: true,
+    tone: "ghost",
+    onClick: () => setStep(0)
+  }, "닫기")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#9A6B00",
+      marginTop: 6
+    }
+  }, "그래도 막히면 손을 들어 선생님을 불러 주세요!"));
+}
+
+/* ═══════════ 메인 앱 ═══════════ */
+
+/* ═══════════════════════════════════════════════════════════════
+   프롬프트 스튜디오 · 기록 게시판  (프롬프트 생성기 통합 기능)
+   ─ 생성기는 prompt/ 폴더의 앱을 창으로 불러와 그대로 사용합니다.
+   ─ 복사 버튼을 누르면 프롬프트가 우리 팀 기록(progress.prompts)에 저장됩니다.
+   ═══════════════════════════════════════════════════════════════ */
+const h = React.createElement;
+const PHASE_INFO = {
+  make: { label: "제작 프롬프트", short: "제작", emoji: "🛠", color: GREEN },
+  fix: { label: "개선 프롬프트", short: "개선", emoji: "🔁", color: RED }
+};
+const miniBtn = (extra = {}) => ({
+  fontFamily: FONT,
+  background: "#fff",
+  border: `2px solid ${INK}`,
+  borderRadius: 10,
+  padding: "6px 10px",
+  fontWeight: 800,
+  fontSize: 12,
+  cursor: "pointer",
+  ...extra
+});
+const inputStyle = {
+  fontFamily: FONT,
+  width: "100%",
+  border: `2px solid ${INK}`,
+  borderRadius: 10,
+  padding: "8px 10px",
+  fontSize: 13,
+  marginTop: 6,
+  boxSizing: "border-box"
+};
+
+/* ── 프롬프트 스튜디오 (생성기 + 자동 기록) ── */
+function PromptStudio({ progress, setProgress, config, setConfig, missionId, onClose }) {
+  const [phase, setPhase] = useState("make");
+  const [reason, setReason] = useState("");
+  const [by, setBy] = useState("");
+  const [savedCount, setSavedCount] = useState(0);
+  const [last, setLast] = useState(null);
+  const frameRef = useRef(null);
+  const metaRef = useRef({});
+  const progRef = useRef(progress);
+  metaRef.current = { phase, reason, by, missionId };
+  progRef.current = progress;
+
+  useEffect(() => {
+    const onMsg = e => {
+      const d = e.data || {};
+      if (d.type === "pg-ready" && frameRef.current && frameRef.current.contentWindow) {
+        const a = (progRef.current && progRef.current.answers) || {};
+        frameRef.current.contentWindow.postMessage({
+          type: "pg-init",
+          customer: (a.m2 && a.m2.who) || "",
+          problem: (a.m1 && a.m1.star) || "",
+          product: (a.m3 && a.m3.name) || "",
+          options: config.promptOptions || null
+        }, "*");
+      }
+      if (d.type === "pg-record") {
+        const meta = metaRef.current;
+        const rec = {
+          _id: uid(),
+          phase: meta.phase,
+          mission: meta.missionId || null,
+          kind: d.kind || "",
+          before: d.before || "",
+          after: d.after || "",
+          changed: d.changed || [],
+          reason: meta.phase === "fix" ? (meta.reason || "") : "",
+          by: (meta.by || "").trim(),
+          ts: new Date().toISOString()
+        };
+        setProgress(pp => ({ ...pp, prompts: [...(pp.prompts || []), rec] }));
+        setSavedCount(c => c + 1);
+        setLast(rec);
+      }
+      if (d.type === "pg-options" && d.options) {
+        setConfig(c => {
+          const next = { ...c, promptOptions: d.options };
+          sSet("startup-app-config", next);
+          return next;
+        });
+      }
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
+
+  return h("div", {
+    style: {
+      position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+      background: PAPER, zIndex: 60, display: "flex", flexDirection: "column", fontFamily: FONT, color: INK
+    }
+  },
+    h("div", { style: { background: "#fff", borderBottom: `3px solid ${INK}`, padding: "10px 12px" } },
+      h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+        h("button", { onClick: onClose, style: miniBtn() }, "← 돌아가기"),
+        h("div", { style: { fontWeight: 900, fontSize: 15, flex: 1 } }, "🧪 프롬프트 생성기"),
+        savedCount > 0 && h("span", { style: { fontSize: 12, fontWeight: 900, color: GREEN } }, `기록 ${savedCount}개 저장됨`)
+      ),
+      h("div", { style: { display: "flex", gap: 6, marginTop: 8 } },
+        ["make", "fix"].map(k => h("button", {
+          key: k,
+          onClick: () => setPhase(k),
+          style: miniBtn({
+            flex: 1,
+            background: phase === k ? PHASE_INFO[k].color : "#fff",
+            color: phase === k ? "#fff" : INK,
+            fontSize: 13,
+            padding: "8px 10px"
+          })
+        }, `${PHASE_INFO[k].emoji} ${PHASE_INFO[k].label}`))
+      ),
+      phase === "fix" && h("input", {
+        value: reason,
+        onChange: e => setReason(e.target.value),
+        placeholder: "왜 고치나요? (예: 고객이 시작 버튼을 찾지 못했다)",
+        style: inputStyle
+      }),
+      h("input", {
+        value: by,
+        onChange: e => setBy(e.target.value),
+        placeholder: "작성한 사람 이름 (선택)",
+        style: inputStyle
+      }),
+      h("div", { style: { fontSize: 11, color: "#6B76A0", marginTop: 6, lineHeight: 1.5 } },
+        "복사 버튼(📋)을 누르면 프롬프트가 우리 팀 기록에 자동으로 저장됩니다. ",
+        phase === "fix" ? "개선 프롬프트는 이유와 함께 저장돼요." : "고객·문제는 우리 미션 기록에서 자동으로 채워집니다."
+      ),
+      last && h("div", {
+        style: {
+          marginTop: 8, background: "#F0FBF6", border: `2px solid ${GREEN}`, borderRadius: 10,
+          padding: "6px 10px", fontSize: 12, fontWeight: 700
+        }
+      }, `✅ 방금 저장: ${PHASE_INFO[last.phase].short} · ${last.changed.length ? "고친 부분 " + last.changed.join(", ") : "원본 그대로"}`)
+    ),
+    h("iframe", {
+      ref: frameRef,
+      src: "prompt/?embed=1",
+      title: "프롬프트 생성기",
+      style: { flex: 1, width: "100%", border: "none", background: "#F5F7FB" }
+    })
+  );
+}
+
+/* ── 프롬프트 카드 ── */
+function PromptItem({ p, mine }) {
+  const info = PHASE_INFO[p.phase] || PHASE_INFO.make;
+  return h("div", {
+    style: card({ padding: 12, marginBottom: 10, background: mine ? "#FFFDF5" : "#fff" })
+  },
+    h("div", { style: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 6 } },
+      h("span", {
+        style: { background: info.color, color: "#fff", borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 900 }
+      }, `${info.emoji} ${info.short}`),
+      h("span", { style: { fontWeight: 900, fontSize: 13 } }, `${p.team}팀`),
+      mine && h("span", { style: { fontSize: 11, fontWeight: 900, color: GOLD } }, "우리 팀"),
+      p.kind && h("span", { style: { fontSize: 11, color: "#6B76A0" } }, `· ${p.kind}`),
+      p.by && h("span", { style: { fontSize: 11, color: "#6B76A0" } }, `· ${p.by}`)
+    ),
+    p.reason && h("div", {
+      style: { fontSize: 12, background: "#FFF1F3", border: `1px solid ${RED}`, borderRadius: 8, padding: "5px 8px", marginBottom: 6 }
+    }, "🗣 고친 이유 — ", p.reason),
+    h("div", { style: { fontSize: 12, color: "#6B76A0", marginBottom: 2 } }, "수정 전"),
+    h("div", {
+      style: { fontSize: 12, background: "#F4F6FB", borderRadius: 8, padding: "6px 8px", marginBottom: 6, whiteSpace: "pre-wrap" }
+    }, p.before || "-"),
+    h("div", { style: { fontSize: 12, color: "#6B76A0", marginBottom: 2 } }, "수정 후"),
+    h("div", {
+      style: { fontSize: 13, background: SKY, borderRadius: 8, padding: "6px 8px", whiteSpace: "pre-wrap", fontWeight: 600 }
+    }, p.after || "-"),
+    h("div", { style: { marginTop: 6, display: "flex", gap: 4, flexWrap: "wrap" } },
+      (p.changed || []).length
+        ? (p.changed || []).map((c, i) => h("span", {
+            key: i,
+            style: { fontSize: 11, fontWeight: 800, background: "#EAF2FE", border: `1px solid ${PRIMARY}`, color: PRIMARY, borderRadius: 20, padding: "2px 8px" }
+          }, `고친 부분 ${c}`))
+        : h("span", { style: { fontSize: 11, color: "#8A93B5" } }, "생성기 원본을 그대로 사용")
+    )
+  );
+}
+
+/* ── 게시판: 프롬프트 · 리뷰 ── */
+function Board({ config, site, cls, myTeam, progress, onClose }) {
+  const [tab, setTab] = useState("prompt");
+  const [rows, setRows] = useState(null);
+  const [filter, setFilter] = useState("all");
+
+  const load = async () => {
+    setRows(null);
+    const out = [];
+    for (let n = 1; n <= config.teamCount; n++) {
+      const v = n === myTeam && progress ? progress : await sGet(teamKey(site, cls, n));
+      if (v) out.push({ n, v });
+    }
+    setRows(out);
+  };
+  useEffect(() => { load(); }, []);
+
+  const prompts = [];
+  (rows || []).forEach(r => toList(r.v.prompts).forEach(p => prompts.push({ ...p, team: r.n })));
+  prompts.sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
+  const shown = prompts.filter(p => filter === "all" || p.phase === filter);
+
+  const given = ((progress && progress.reviews) || []).map(r => ({ ...r }));
+  const received = [];
+  (rows || []).forEach(r => {
+    if (r.n === myTeam) return;
+    toList(r.v.reviews).forEach(rv => { if (rv.toTeam === myTeam) received.push({ ...rv, from: r.n }); });
+  });
+
+  const Tab = ({ id, label }) => h("button", {
+    onClick: () => setTab(id),
+    style: miniBtn({
+      flex: 1, fontSize: 13, padding: "8px 10px",
+      background: tab === id ? PRIMARY : "#fff",
+      color: tab === id ? "#fff" : INK
+    })
+  }, label);
+
+  const ReviewCard = (r, i, dir) => h("div", {
+    key: i,
+    style: card({ padding: 10, marginBottom: 8 })
+  },
+    h("div", { style: { fontWeight: 900, fontSize: 13, marginBottom: 4 } },
+      dir === "given" ? `→ ${r.booth || (r.toTeam ? r.toTeam + "팀" : "")}에게` : `← ${r.from}팀이 남김`,
+      r.by ? h("span", { style: { fontWeight: 600, fontSize: 11, color: "#6B76A0" } }, ` · ${r.by}`) : null
+    ),
+    r.good && h("div", { style: { fontSize: 13 } }, "👍 ", r.good),
+    r.bad && h("div", { style: { fontSize: 13 } }, "🤔 ", r.bad),
+    r.idea && h("div", { style: { fontSize: 13 } }, "💡 ", r.idea)
+  );
+
+  return h("div", {
+    style: { fontFamily: FONT, minHeight: "100vh", background: PAPER, color: INK, padding: 16 }
+  },
+    h("div", { style: { maxWidth: 640, margin: "0 auto" } },
+      h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10 } },
+        h("button", { onClick: onClose, style: miniBtn() }, "← 미션 맵"),
+        h("div", { style: { fontWeight: 900, fontSize: 13, flex: 1, textAlign: "right" } },
+          myTeam ? `${myTeam}팀` : "체험 모드"),
+        h("button", { onClick: load, style: miniBtn() }, "🔄 새로고침")
+      ),
+      h("h2", { style: { fontSize: 20, fontWeight: 900, margin: "4px 0 2px" } }, "📋 우리 반 기록 게시판"),
+      h("div", { style: { fontSize: 12, color: "#6B76A0", marginBottom: 10, fontWeight: 700 } },
+        [siteName(config, site) || config.orgName, (config.classes || [])[cls]].filter(Boolean).join(" · ")),
+      h("div", { style: { display: "flex", gap: 6, marginBottom: 12 } },
+        h(Tab, { id: "prompt", label: `🧪 프롬프트 (${prompts.length})` }),
+        h(Tab, { id: "review", label: `💬 리뷰 (${given.length + received.length})` })
+      ),
+      rows === null && h("div", { style: card({ padding: 16, textAlign: "center", fontWeight: 800 }) }, "기록을 모으는 중…"),
+
+      rows !== null && tab === "prompt" && h("div", null,
+        h("div", { style: { display: "flex", gap: 6, marginBottom: 10 } },
+          [["all", "전체"], ["make", "🛠 제작"], ["fix", "🔁 개선"]].map(([k, lb]) => h("button", {
+            key: k,
+            onClick: () => setFilter(k),
+            style: miniBtn({
+              background: filter === k ? INK : "#fff",
+              color: filter === k ? "#fff" : INK
+            })
+          }, lb))
+        ),
+        shown.length === 0
+          ? h("div", { style: card({ padding: 16, fontSize: 13, lineHeight: 1.6 }) },
+              "아직 기록된 프롬프트가 없어요. 미션 화면의 ", h("b", null, "🧪 프롬프트 만들기"),
+              " 버튼으로 프롬프트를 만들고 복사하면 여기에 자동으로 모입니다.")
+          : shown.map((p, i) => h(PromptItem, { key: i, p: p, mine: p.team === myTeam }))
+      ),
+
+      rows !== null && tab === "review" && h("div", null,
+        h("div", { style: { fontWeight: 900, fontSize: 14, margin: "4px 0 8px" } }, `📤 우리가 남긴 리뷰 (${given.length})`),
+        given.length === 0
+          ? h("div", { style: card({ padding: 12, fontSize: 13, marginBottom: 14 }) }, "아직 남긴 리뷰가 없어요. 박람회 미션에서 다른 팀 부스를 방문해 보세요.")
+          : h("div", { style: { marginBottom: 14 } }, given.map((r, i) => ReviewCard(r, i, "given"))),
+        h("div", { style: { fontWeight: 900, fontSize: 14, margin: "4px 0 8px" } }, `📥 우리가 받은 리뷰 (${received.length})`),
+        received.length === 0
+          ? h("div", { style: card({ padding: 12, fontSize: 13 }) }, "아직 받은 리뷰가 없어요.")
+          : received.map((r, i) => ReviewCard(r, i, "received"))
+      )
+    )
+  );
+}
+
+function App() {
+  const [config, setConfig] = useState(DEFAULT_CONFIG);
+  const [loaded, setLoaded] = useState(false);
+  const [site, setSite] = useState(null); // 학교·기관 인덱스
+  const [cls, setCls] = useState(null); // 반 인덱스
+  const [mode, setMode] = useState(null); // 'ex'(혼자 체험) | 'team'(팀 프로젝트)
+  const [team, setTeam] = useState(null); // 번호 (체험: 출석번호 / 팀: 팀 번호)
+  const [progress, setProgress] = useState(null);
+  const [screen, setScreen] = useState("start"); // start | home | mission | editor | pin
+  const [current, setCurrent] = useState(null);
+  const [pinInput, setPinInput] = useState("");
+  const [pinErr, setPinErr] = useState(false);
+  const [gate, setGate] = useState(null); // 팀 비밀번호 화면 { n, saved, type: 'create'|'enter' }
+  const [gatePw, setGatePw] = useState("");
+  const [gatePw2, setGatePw2] = useState("");
+  const [gateErr, setGateErr] = useState("");
+  const [studioMission, setStudioMission] = useState(null); // 프롬프트 스튜디오에서 돌아갈 미션
+  const saveTimer = useRef(null);
+  useEffect(() => {
+    (async () => {
+      const saved = await sGet("startup-app-config");
+      if (saved) setConfig(deepMerge(DEFAULT_CONFIG, saved));
+      setLoaded(true);
+    })();
+  }, []);
+  const slotKey = (ci, md, n) => md === "ex" ? exKey(site, ci, n) : teamKey(site, ci, n);
+
+  /* 마지막으로 서버와 맞춘 상태 — 무엇이 새로 바뀌었는지 판단하는 기준 */
+  const baseRef = useRef(null);
+  const progressRef = useRef(null);
+  progressRef.current = progress;
+
+  // 바뀐 항목만 저장 (디바운스)
+  useEffect(() => {
+    if (team == null || cls == null || !mode || !progress) return;
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      const patch = collectDiff(baseRef.current, progress);
+      if (!Object.keys(patch).length) return;
+      patch.updatedAt = new Date().toISOString();
+      baseRef.current = clone(progress);
+      await sPatch(slotKey(cls, mode, team), patch);
+    }, 500);
+    return () => clearTimeout(saveTimer.current);
+  }, [progress, team, cls, mode]);
+
+  // 같은 팀의 다른 기기가 쓴 내용 실시간 반영
+  useEffect(() => {
+    if (team == null || cls == null || mode !== "team") return;
+    const key = slotKey(cls, mode, team);
+    const off = window.storage.subscribe(key, raw => {
+      if (!raw) return;
+      const remote = normalizeProgress(typeof raw === "string" ? JSON.parse(raw) : raw);
+      const local = progressRef.current;
+      if (!local) return;
+      const merged = mergeRemote(local, remote, baseRef.current);
+      baseRef.current = clone(remote);
+      if (JSON.stringify(merged) !== JSON.stringify(local)) setProgress(merged);
+    });
+    return () => off();
+  }, [team, cls, mode]);
+  const emptyProgress = () => ({
+    stamps: {},
+    answers: {},
+    checks: {},
+    roles: {},
+    reviews: [],
+    prompts: [],
+    retro: {}
+  });
+  /* 입장할 때: 예전 형식(통짜 문자열·배열)이면 새 형식으로 한 번 바꿔 둡니다 */
+  const openProgress = async (n, saved) => {
+    const norm = normalizeProgress(saved);
+    const needsUpgrade = saved && (Array.isArray(saved.reviews) && saved.reviews.length || Array.isArray(saved.prompts) && saved.prompts.length);
+    baseRef.current = clone(norm);
+    if (saved && needsUpgrade) {
+      const conv = obj => {
+        const m = {};
+        (obj || []).forEach(x => { const b = { ...x }; delete b._id; m[x._id || uid()] = b; });
+        return m;
+      };
+      await sSet(slotKey(cls, mode, n), {
+        ...saved,
+        reviews: conv(norm.reviews),
+        prompts: conv(norm.prompts)
+      });
+    }
+    return norm;
+  };
+  const pickSlot = async n => {
+    const saved = await sGet(slotKey(cls, mode, n));
+    if (mode === "team") {
+      // 팀 프로젝트는 모둠 비밀번호 확인 후 입장 (다른 모둠 실수 방지)
+      setGatePw("");
+      setGatePw2("");
+      setGateErr("");
+      setGate({
+        n,
+        saved,
+        type: saved && saved.pw ? "enter" : "create"
+      });
+      setScreen("gate");
+      return;
+    }
+    setTeam(n);
+    setProgress(await openProgress(n, saved));
+    setScreen("home");
+  };
+  const M = config.missions;
+  const stamps = progress?.stamps || {};
+  const stampCount = Object.keys(stamps).filter(k => stamps[k]).length;
+  const levelList = config.levels && config.levels.length ? config.levels : LEVELS;
+  const level = [...levelList].sort((a, b) => a.min - b.min).reverse().find(l => stampCount >= l.min) || levelList[0];
+  const unlocked = id => {
+    if (mode === "ex") return true; // 체험 모드: 전체 미션 자유롭게 열람
+    const i = DAY1.indexOf(id);
+    if (i === 0) return true;
+    if (i > 0) return !!stamps[DAY1[i - 1]];
+    if (WEEK.includes(id)) return !!stamps.m6;
+    if (id === "d1") return !!stamps.m6;
+    if (id === "d2") return !!stamps.d1;
+    return false;
+  };
+  const setAnswer = (mid, qid, v) => setProgress(p => ({
+    ...p,
+    answers: {
+      ...p.answers,
+      [mid]: {
+        ...(p.answers[mid] || {}),
+        [qid]: v
+      }
+    }
+  }));
+  const toggleCheck = (mid, idx) => setProgress(p => {
+    const c = {
+      ...(p.checks[mid] || {})
+    };
+    c[idx] = !c[idx];
+    return {
+      ...p,
+      checks: {
+        ...p.checks,
+        [mid]: c
+      }
+    };
+  });
+  const stampIt = mid => setProgress(p => ({
+    ...p,
+    stamps: {
+      ...p.stamps,
+      [mid]: true
+    }
+  }));
+  if (!loaded) return /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: FONT,
+      padding: 40,
+      textAlign: "center",
+      color: INK
+    }
+  }, "불러오는 중…");
+
+  /* ── 시작 화면: (① 학교) → ② 반 → ③ 모드 → ④ 번호 ── */
+  const useSites = !!(config.sites && config.sites.length);
+  if (screen === "start") return /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: FONT,
+      minHeight: "100vh",
+      background: PAPER,
+      color: INK,
+      padding: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxWidth: 560,
+      margin: "0 auto"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      margin: "28px 0 18px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 44
+    }
+  }, "🚀"), /*#__PURE__*/React.createElement("h1", {
+    style: {
+      fontSize: 30,
+      fontWeight: 900,
+      margin: "6px 0"
+    }
+  }, config.appTitle), config.orgName && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "inline-block",
+      background: "#fff",
+      border: `2px solid ${INK}`,
+      borderRadius: 20,
+      padding: "3px 14px",
+      fontSize: 13,
+      fontWeight: 800,
+      margin: "2px 0 8px",
+      boxShadow: `2px 2px 0 ${INK}`
+    }
+  }, "🏫 ", config.orgName), /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14,
+      color: "#5A648C",
+      margin: 0
+    }
+  }, "문제 발견 → 고객 → 프로토타입 → 홍보 → 박람회")), useSites && /*#__PURE__*/React.createElement("div", {
+    style: card({
+      padding: 16,
+      marginBottom: 12
+    })
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 900,
+      marginBottom: 10
+    }
+  }, "① 오늘 수업하는 학교·기관을 선택하세요"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      flexWrap: "wrap"
+    }
+  }, config.sites.map((nm, i) => /*#__PURE__*/React.createElement(Btn, {
+    key: i,
+    tone: site === i ? "primary" : "ghost",
+    onClick: () => {
+      setSite(i);
+      setCls(null);
+      setMode(null);
+    }
+  }, nm))), site !== null && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#6B76A0",
+      marginTop: 8
+    }
+  }, "🏫 ", config.sites[site], " 의 기록만 보이고 저장됩니다.")), (!useSites || site !== null) && /*#__PURE__*/React.createElement("div", {
+    style: card({
+      padding: 16,
+      marginBottom: 12
+    })
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 900,
+      marginBottom: 10
+    }
+  }, `${useSites ? "②" : "①"} 우리 반을 선택하세요`), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      flexWrap: "wrap"
+    }
+  }, config.classes.map((c, i) => /*#__PURE__*/React.createElement(Btn, {
+    key: i,
+    tone: cls === i ? "primary" : "ghost",
+    onClick: () => {
+      setCls(i);
+      setMode(null);
+    }
+  }, c)))), cls !== null && /*#__PURE__*/React.createElement("div", {
+    style: card({
+      padding: 16,
+      marginBottom: 12
+    })
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 900,
+      marginBottom: 10
+    }
+  }, `${useSites ? "③" : "②"} 무엇을 할까요?`), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    tone: mode === "ex" ? "gold" : "ghost",
+    onClick: () => setMode("ex"),
+    style: {
+      padding: "12px 8px",
+      lineHeight: 1.5
+    }
+  }, "👀 혼자 체험하기", /*#__PURE__*/React.createElement("br", null), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11
+    }
+  }, "모든 미션 열림 · 연습 기록")), /*#__PURE__*/React.createElement(Btn, {
+    tone: mode === "team" ? "primary" : "ghost",
+    onClick: () => setMode("team"),
+    style: {
+      padding: "12px 8px",
+      lineHeight: 1.5
+    }
+  }, "🚀 우리 팀 프로젝트", /*#__PURE__*/React.createElement("br", null), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11
+    }
+  }, "진짜 기록 · 미션 순서대로")))), cls !== null && mode && /*#__PURE__*/React.createElement("div", {
+    style: card({
+      padding: 16
+    })
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 900,
+      marginBottom: 10
+    }
+  }, `${useSites ? "④" : "③"} `, mode === "ex" ? "내 번호(출석번호)를 선택하세요" : "우리 팀 번호를 선택하세요"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: mode === "ex" ? "repeat(6,1fr)" : "repeat(3,1fr)",
+      gap: 8
+    }
+  }, Array.from({
+    length: mode === "ex" ? config.explorerCount : config.teamCount
+  }, (_, i) => i + 1).map(n => /*#__PURE__*/React.createElement(Btn, {
+    key: n,
+    tone: mode === "ex" ? "gold" : "primary",
+    onClick: () => pickSlot(n),
+    style: {
+      padding: mode === "ex" ? "10px 0" : "14px 0"
+    }
+  }, mode === "ex" ? `${n}번` : `${n}팀`))), mode === "ex" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#8A93B5",
+      marginTop: 8
+    }
+  }, "뒤쪽 번호는 선생님·시연용으로 비워 두어도 좋아요. 체험 기록은 연습용이라 팀 프로젝트에는 남지 않습니다.")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center",
+      marginTop: 16
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setPinInput("");
+      setScreen("pin");
+    },
+    style: {
+      fontFamily: FONT,
+      background: "none",
+      border: "none",
+      color: "#8A93B5",
+      fontSize: 13,
+      cursor: "pointer",
+      textDecoration: "underline"
+    }
+  }, "🔑 선생님 (편집자 모드)"))));
+
+  /* ── 팀 비밀번호 게이트 ── */
+  if (screen === "gate" && gate) {
+    const label = `${config.classes[cls]} ${gate.n}팀`;
+    const back = () => {
+      setGate(null);
+      setGatePw("");
+      setGatePw2("");
+      setGateErr("");
+      setScreen("start");
+    };
+    const pwInput = (val, setVal, ph) => /*#__PURE__*/React.createElement("input", {
+      type: "password",
+      inputMode: "numeric",
+      value: val,
+      placeholder: ph,
+      onChange: e => {
+        setVal(e.target.value);
+        setGateErr("");
+      },
+      style: {
+        fontFamily: FONT,
+        width: "100%",
+        boxSizing: "border-box",
+        fontSize: 16,
+        letterSpacing: 4,
+        border: `2px solid ${INK}`,
+        borderRadius: 10,
+        padding: "10px 12px",
+        marginBottom: 8,
+        background: "#FDFDFF"
+      }
+    });
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontFamily: FONT,
+        minHeight: "100vh",
+        background: PAPER,
+        color: INK,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 20
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: card({
+        padding: 24,
+        width: 340
+      })
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontWeight: 900,
+        fontSize: 17
+      }
+    }, "🔐 ", label), gate.type === "create" ? /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        color: "#5A648C",
+        margin: "8px 0 12px",
+        lineHeight: 1.6
+      }
+    }, "첫 입장이에요! 우리 모둠만의 비밀번호를 만드세요.", /*#__PURE__*/React.createElement("br", null), "숫자 4자리 추천 — 모둠 전원이 기억할 수 있는 것으로!"), pwInput(gatePw, setGatePw, "비밀번호 (4자리 이상)"), pwInput(gatePw2, setGatePw2, "한 번 더 입력"), gateErr && /*#__PURE__*/React.createElement("div", {
+      style: {
+        color: RED,
+        fontWeight: 800,
+        fontSize: 13,
+        marginBottom: 8
+      }
+    }, gateErr), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 8
+      }
+    }, /*#__PURE__*/React.createElement(Btn, {
+      onClick: () => {
+        if (gatePw.length < 4) {
+          setGateErr("4자리 이상으로 만들어 주세요");
+          return;
+        }
+        if (gatePw !== gatePw2) {
+          setGateErr("두 번 입력한 비밀번호가 서로 달라요");
+          return;
+        }
+        const data = {
+          ...normalizeProgress(gate.saved),
+          pw: gatePw
+        };
+        baseRef.current = clone(normalizeProgress(gate.saved));
+        setTeam(gate.n);
+        setProgress(data);
+        setGate(null);
+        setGatePw("");
+        setGatePw2("");
+        setScreen("home");
+      }
+    }, "만들고 입장"), /*#__PURE__*/React.createElement(Btn, {
+      tone: "ghost",
+      onClick: back
+    }, "돌아가기"))) : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        color: "#5A648C",
+        margin: "8px 0 12px"
+      }
+    }, "모둠 비밀번호를 입력하세요."), pwInput(gatePw, setGatePw, "비밀번호"), gateErr && /*#__PURE__*/React.createElement("div", {
+      style: {
+        color: RED,
+        fontWeight: 800,
+        fontSize: 13,
+        marginBottom: 8
+      }
+    }, gateErr), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 8
+      }
+    }, /*#__PURE__*/React.createElement(Btn, {
+      onClick: () => {
+        if (gatePw === gate.saved.pw) {
+          setTeam(gate.n);
+          openProgress(gate.n, gate.saved).then(setProgress);
+          setGate(null);
+          setGatePw("");
+          setScreen("home");
+        } else setGateErr("비밀번호가 달라요. 우리 모둠 번호가 맞는지 확인해 보세요!");
+      }
+    }, "입장"), /*#__PURE__*/React.createElement(Btn, {
+      tone: "ghost",
+      onClick: back
+    }, "돌아가기")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: "#8A93B5",
+        marginTop: 10
+      }
+    }, "비밀번호를 잊었다면 선생님께 말씀드리세요. (편집자 모드에서 확인·초기화할 수 있어요)"))));
+  }
+
+  /* ── PIN ── */
+  if (screen === "pin") return /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: FONT,
+      minHeight: "100vh",
+      background: PAPER,
+      color: INK,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: card({
+      padding: 24,
+      width: 300
+    })
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 900,
+      marginBottom: 10
+    }
+  }, "편집자 PIN 입력"), /*#__PURE__*/React.createElement(Field, {
+    q: "",
+    value: pinInput,
+    onChange: v => {
+      setPinInput(v);
+      setPinErr(false);
+    },
+    ph: "기본값 0000"
+  }), pinErr && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: RED,
+      fontWeight: 800,
+      fontSize: 13,
+      marginTop: 6
+    }
+  }, "PIN이 다릅니다"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      marginTop: 12
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    onClick: () => pinInput === config.pin ? setScreen("editor") : setPinErr(true)
+  }, "입장"), /*#__PURE__*/React.createElement(Btn, {
+    tone: "ghost",
+    onClick: () => setScreen("start")
+  }, "돌아가기"))));
+
+  /* ── 편집자 모드 ── */
+  if (screen === "editor") return /*#__PURE__*/React.createElement(Editor, {
+    config: config,
+    setConfig: setConfig,
+    exit: () => setScreen("start")
+  });
+
+  /* ── 미션 화면 ── */
+  const slotLabel = team != null && cls != null ? `${useSites && site !== null ? config.sites[site] + " · " : ""}${config.classes[cls]} · ${mode === "ex" ? `체험 ${team}번` : `${team}팀`}` : "";
+
+  /* ── 프롬프트 스튜디오 ── */
+  const openStudio = (mid = null) => {
+    setStudioMission(mid);
+    setScreen("studio");
+  };
+  if (screen === "studio") return /*#__PURE__*/React.createElement(PromptStudio, {
+    progress: progress,
+    setProgress: setProgress,
+    config: config,
+    setConfig: setConfig,
+    missionId: studioMission,
+    onClose: () => setScreen(studioMission ? "mission" : "home")
+  });
+
+  /* ── 기록 게시판 ── */
+  if (screen === "board") return /*#__PURE__*/React.createElement(Board, {
+    config: config,
+    site: site,
+    cls: cls,
+    myTeam: mode === "team" ? team : null,
+    progress: progress,
+    onClose: () => setScreen("home")
+  });
+  if (screen === "mission" && current) {
+    const m = M[current];
+    return /*#__PURE__*/React.createElement(Shell, {
+      title: `${mnum(current)} · ${m.title} — ${m.badge}`,
+      back: () => setScreen("home"),
+      level: level,
+      team: slotLabel,
+      practice: mode === "ex",
+      customer: assembleCustomer(progress)
+    }, /*#__PURE__*/React.createElement(MissionBody, {
+      id: current,
+      m: m,
+      progress: progress,
+      config: config,
+      openStudio: openStudio,
+      myTeam: mode === "team" ? team : null,
+      setAnswer: setAnswer,
+      toggleCheck: toggleCheck,
+      setProgress: setProgress,
+      done: !!stamps[current],
+      onStamp: () => {
+        stampIt(current);
+        setScreen("home");
+      }
+    }));
+  }
+
+  /* ── 홈: 미션 맵 ── */
+  const Section = ({
+    title,
+    ids,
+    color
+  }) => /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 18
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      width: 12,
+      height: 12,
+      borderRadius: 4,
+      background: color,
+      border: `2px solid ${INK}`
+    }
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontWeight: 900,
+      fontSize: 14
+    }
+  }, title)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 8
+    }
+  }, ids.map(id => {
+    const m = M[id];
+    const open = unlocked(id);
+    const done = !!stamps[id];
+    return /*#__PURE__*/React.createElement("button", {
+      key: id,
+      disabled: !open,
+      onClick: () => {
+        setCurrent(id);
+        setScreen("mission");
+      },
+      style: {
+        ...card({
+          padding: "10px 14px"
+        }),
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        fontFamily: FONT,
+        textAlign: "left",
+        cursor: open ? "pointer" : "default",
+        opacity: open ? 1 : 0.45,
+        boxShadow: open ? `4px 4px 0 ${INK}` : "none"
+      }
+    }, /*#__PURE__*/React.createElement(Stamp, {
+      done: done
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontWeight: 900,
+        fontSize: 15
+      }
+    }, mnum(id) ? `${mnum(id)} · ${m.title}` : m.title, " ", !open && "🔒"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: "#6B76A0"
+      }
+    }, m.badge)), open && !done && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 13,
+        fontWeight: 900,
+        color: PRIMARY
+      }
+    }, "GO →"));
+  })));
+  return /*#__PURE__*/React.createElement(Shell, {
+    title: "미션 맵",
+    level: level,
+    team: slotLabel,
+    practice: mode === "ex",
+    customer: assembleCustomer(progress),
+    back: () => {
+      setTeam(null);
+      setMode(null);
+      setScreen("start");
+    },
+    backLabel: "처음으로"
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => openStudio(null),
+    style: {
+      ...card({
+        padding: "10px 12px"
+      }),
+      flex: 1,
+      fontFamily: FONT,
+      fontWeight: 900,
+      fontSize: 13,
+      cursor: "pointer",
+      textAlign: "center"
+    }
+  }, "🧪 프롬프트 만들기"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setScreen("board"),
+    style: {
+      ...card({
+        padding: "10px 12px"
+      }),
+      flex: 1,
+      fontFamily: FONT,
+      fontWeight: 900,
+      fontSize: 13,
+      cursor: "pointer",
+      textAlign: "center"
+    }
+  }, "📋 기록 게시판")), /*#__PURE__*/React.createElement(Section, {
+    title: "1일차 — 발명가의 날",
+    ids: DAY1,
+    color: GREEN
+  }), /*#__PURE__*/React.createElement(Section, {
+    title: "일주일 미션 보드 — 창업가로 변신 (순서 자유!)",
+    ids: WEEK,
+    color: GOLD
+  }), /*#__PURE__*/React.createElement(Section, {
+    title: "2일차 — 선택받는 날",
+    ids: DAY2,
+    color: PRIMARY
+  }));
+}
+
+/* ── 공통 레이아웃 ── */
+function Shell({
+  title,
+  children,
+  back,
+  backLabel = "← 미션 맵",
+  level,
+  team,
+  customer,
+  practice
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: FONT,
+      minHeight: "100vh",
+      background: PAPER,
+      color: INK,
+      padding: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxWidth: 640,
+      margin: "0 auto"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: back,
+    style: {
+      fontFamily: FONT,
+      background: "#fff",
+      border: `2px solid ${INK}`,
+      borderRadius: 10,
+      padding: "6px 10px",
+      fontWeight: 800,
+      fontSize: 12,
+      cursor: "pointer"
+    }
+  }, backLabel), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 900
+    }
+  }, team, " · ", level.icon, " ", level.name)), practice && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#FFF1D6",
+      border: `2px solid ${GOLD}`,
+      borderRadius: 10,
+      padding: "6px 10px",
+      fontSize: 12,
+      fontWeight: 800,
+      marginBottom: 10
+    }
+  }, "👀 체험 모드 — 모든 미션이 열려 있어요. 자유롭게 눌러 보세요! (연습 기록이라 팀 프로젝트에는 남지 않아요)"), customer && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#FFFBEB",
+      border: `2px dashed ${GOLD}`,
+      borderRadius: 10,
+      padding: "6px 10px",
+      fontSize: 12,
+      marginBottom: 10
+    }
+  }, "📌 ", customer), /*#__PURE__*/React.createElement("h2", {
+    style: {
+      fontSize: 20,
+      fontWeight: 900,
+      margin: "4px 0 12px"
+    }
+  }, title), children));
+}
+function assembleCustomer(progress) {
+  const a = progress?.answers?.m2 || {};
+  const star = progress?.answers?.m1?.star;
+  if (!a.who || !star) return null;
+  return `우리 제품은 '${star}' 때문에 불편한 ${a.who}를 위해 필요합니다.`;
+}
+
+/* ── 미션 본문 렌더링 ── */
+function MissionBody({
+  id,
+  m,
+  progress,
+  config,
+  setAnswer,
+  toggleCheck,
+  setProgress,
+  done,
+  onStamp,
+  openStudio,
+  myTeam
+}) {
+  const answers = progress.answers[id] || {};
+  const checks = progress.checks[id] || {};
+  const allChecked = (m.check || []).every((_, i) => checks[i]);
+  const Brief = () => /*#__PURE__*/React.createElement("div", {
+    style: card({
+      padding: 14,
+      marginBottom: 14,
+      background: "#F7F9FF"
+    })
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 900,
+      color: PRIMARY,
+      marginBottom: 4
+    }
+  }, "미션 브리핑"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      whiteSpace: "pre-wrap"
+    }
+  }, m.briefing), m.image && /*#__PURE__*/React.createElement("img", {
+    src: m.image,
+    alt: "",
+    style: {
+      width: "100%",
+      borderRadius: 10,
+      marginTop: 10,
+      border: `2px solid ${INK}`
+    }
+  }));
+  const Checklist = () => (m.check || []).length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: card({
+      padding: 14,
+      marginTop: 14
+    })
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 900,
+      color: PRIMARY,
+      marginBottom: 8
+    }
+  }, "클리어 체크"), (m.check || []).map((c, i) => /*#__PURE__*/React.createElement("label", {
+    key: i,
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "flex-start",
+      marginBottom: 6,
+      cursor: "pointer",
+      fontSize: 14
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    checked: !!checks[i],
+    onChange: () => toggleCheck(id, i),
+    style: {
+      width: 18,
+      height: 18,
+      marginTop: 1
+    }
+  }), /*#__PURE__*/React.createElement("span", null, c))), m.honest && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: RED,
+      fontWeight: 700,
+      marginTop: 4
+    }
+  }, "⚖️ 정직한 홍보 점검: 여기 적은 것 중 실제 제품에 없는 것이 있나요? 있다면 홍보물을 고치거나 제품에 추가하세요!"));
+  const StampBtn = () => /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 16,
+      textAlign: "center"
+    }
+  }, done ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 900,
+      color: GREEN
+    }
+  }, "✅ 미션 클리어! 도장이 찍혔습니다") : /*#__PURE__*/React.createElement(Btn, {
+    tone: "gold",
+    disabled: !allChecked,
+    onClick: onStamp
+  }, "🔴 도장 찍고 미션 클리어!"), !done && !allChecked && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#8A93B5",
+      marginTop: 6
+    }
+  }, "클리어 체크를 모두 완료하면 도장을 찍을 수 있어요"));
+
+  /* 투어 */
+  if (m.kind === "tour") {
+    return /*#__PURE__*/React.createElement(TourBody, {
+      m: m,
+      done: done,
+      onStamp: onStamp,
+      Brief: Brief
+    });
+  }
+
+  /* 역할 분담 */
+  if (m.kind === "roles") {
+    const roles = progress.roles || {};
+    return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(Brief, null), (m.roles || []).map(r => /*#__PURE__*/React.createElement("div", {
+      key: r.id,
+      style: card({
+        padding: 12,
+        marginBottom: 10
+      })
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontWeight: 900,
+        fontSize: 14
+      }
+    }, r.name), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: "#6B76A0",
+        marginBottom: 6
+      }
+    }, r.desc), /*#__PURE__*/React.createElement(Field, {
+      value: roles[r.id],
+      ph: "담당 CEO 이름",
+      onChange: v => setProgress(p => ({
+        ...p,
+        roles: {
+          ...p.roles,
+          [r.id]: v
+        }
+      }))
+    }))), /*#__PURE__*/React.createElement(Checklist, null), /*#__PURE__*/React.createElement(StampBtn, null));
+  }
+
+  /* 부트캠프/프로토타입/주중 체크형 */
+  if (m.kind === "boot" || m.kind === "week" || m.kind === "booth") {
+    return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(Brief, null), (m.questions || []).map(q => /*#__PURE__*/React.createElement("div", {
+      key: q.id,
+      style: card({
+        padding: 12,
+        marginBottom: 10
+      })
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontWeight: 800,
+        fontSize: 14,
+        marginBottom: 6
+      }
+    }, q.q), /*#__PURE__*/React.createElement(Field, {
+      value: answers[q.id],
+      ph: q.ph,
+      long: q.type === "long",
+      onChange: v => setAnswer(id, q.id, v)
+    }), /*#__PURE__*/React.createElement(HintEngine, {
+      hints: q.hints,
+      roulette: config.roulette
+    }))), (m.steps || []).map((s, i) => /*#__PURE__*/React.createElement("div", {
+      key: i,
+      style: card({
+        padding: 12,
+        marginBottom: 10
+      })
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontWeight: 900,
+        fontSize: 14
+      }
+    }, s.h), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        marginTop: 4,
+        whiteSpace: "pre-wrap"
+      }
+    }, s.t), s.prompt && /*#__PURE__*/React.createElement(CopyBox, {
+      text: s.prompt
+    }), s.prompt && openStudio && /*#__PURE__*/React.createElement("button", {
+      onClick: () => openStudio(id),
+      style: {
+        fontFamily: FONT,
+        marginTop: 8,
+        background: "#fff",
+        border: `2px solid ${PRIMARY}`,
+        color: PRIMARY,
+        borderRadius: 10,
+        padding: "8px 12px",
+        fontWeight: 900,
+        fontSize: 13,
+        cursor: "pointer",
+        width: "100%"
+      }
+    }, "🧪 프롬프트 생성기로 우리 팀 프롬프트 만들기"))), m.kind === "booth" && /*#__PURE__*/React.createElement(Pitch, {
+      progress: progress
+    }), /*#__PURE__*/React.createElement(Checklist, null), /*#__PURE__*/React.createElement(StampBtn, null));
+  }
+
+  /* 박람회 */
+  if (m.kind === "expo") {
+    return /*#__PURE__*/React.createElement(ExpoBody, {
+      m: m,
+      progress: progress,
+      setProgress: setProgress,
+      done: done,
+      onStamp: onStamp,
+      Brief: Brief,
+      config: config,
+      myTeam: myTeam
+    });
+  }
+
+  /* 기본 QA형 */
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(Brief, null), (m.questions || []).map(q => /*#__PURE__*/React.createElement("div", {
+    key: q.id,
+    style: card({
+      padding: 12,
+      marginBottom: 10
+    })
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 800,
+      fontSize: 14,
+      marginBottom: 8
+    }
+  }, q.q), q.type === "chips" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 8
+    }
+  }, q.options.map(op => {
+    const sel = q.multi ? (answers[q.id] || []).includes(op) : answers[q.id] === op;
+    return /*#__PURE__*/React.createElement("button", {
+      key: op,
+      onClick: () => {
+        if (q.multi) {
+          const cur = answers[q.id] || [];
+          setAnswer(id, q.id, sel ? cur.filter(x => x !== op) : [...cur, op]);
+        } else setAnswer(id, q.id, op);
+      },
+      style: {
+        fontFamily: FONT,
+        padding: "8px 14px",
+        borderRadius: 20,
+        fontWeight: 800,
+        fontSize: 14,
+        border: `2px solid ${INK}`,
+        cursor: "pointer",
+        background: sel ? PRIMARY : "#fff",
+        color: sel ? "#fff" : INK
+      }
+    }, op);
+  })), q.type === "pick3" && /*#__PURE__*/React.createElement("div", null, [0, 1, 2].map(i => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: "flex",
+      gap: 8,
+      marginBottom: 6,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement(Field, {
+    value: (answers.list3 || [])[i],
+    ph: `불편함 ${i + 1}`,
+    onChange: v => {
+      const arr = [...(answers.list3 || ["", "", ""])];
+      arr[i] = v;
+      setAnswer(id, "list3", arr);
+    }
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setAnswer(id, "star", (answers.list3 || [])[i] || ""),
+    style: {
+      fontFamily: FONT,
+      fontSize: 22,
+      background: "none",
+      border: "none",
+      cursor: "pointer",
+      filter: answers.star && answers.star === (answers.list3 || [])[i] ? "none" : "grayscale(1) opacity(.4)"
+    }
+  }, "⭐"))), answers.star && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 800,
+      color: GREEN
+    }
+  }, "★ 우리가 해결할 문제: ", answers.star)), (q.type === "text" || q.type === "long") && /*#__PURE__*/React.createElement(Field, {
+    value: answers[q.id],
+    ph: q.ph,
+    long: q.type === "long",
+    onChange: v => setAnswer(id, q.id, v)
+  }), /*#__PURE__*/React.createElement(HintEngine, {
+    hints: q.hints,
+    roulette: config.roulette
+  }))), /*#__PURE__*/React.createElement(Assembled, {
+    id: id,
+    progress: progress
+  }), /*#__PURE__*/React.createElement(Checklist, null), /*#__PURE__*/React.createElement(StampBtn, null));
+}
+function Assembled({
+  id,
+  progress
+}) {
+  const a = progress.answers;
+  let text = null;
+  if (id === "m2" && a.m2?.who && a.m1?.star) text = `우리 제품은 '${a.m1.star}' 때문에 불편한 ${a.m2.who}를 위해 필요합니다.`;
+  if (id === "m3" && a.m3?.name && a.m3?.how) text = `'${a.m3.name}'은(는) '${a.m1?.star || "우리가 발견한 문제"}'를 ${a.m3.how.length > 40 ? a.m3.how.slice(0, 40) + "…" : a.m3.how}(으)로 해결합니다.`;
+  if (!text) return null;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#EBFBF3",
+      border: `2px solid ${GREEN}`,
+      borderRadius: 12,
+      padding: 12,
+      marginBottom: 4
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 900,
+      color: GREEN
+    }
+  }, "✨ 자동 조립 — 우리 답이 문장이 됐어요!"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 800,
+      marginTop: 4
+    }
+  }, text));
+}
+
+/* ── 투어 (카드 + 순서 퀴즈) ── */
+function TourBody({
+  m,
+  done,
+  onStamp,
+  Brief
+}) {
+  const [tapped, setTapped] = useState([]);
+  const [wrong, setWrong] = useState(false);
+  const answerOrder = m.quiz;
+  const shuffled = useMemo(() => [...answerOrder].sort(() => Math.random() - 0.5), []);
+  const tap = item => {
+    const next = [...tapped, item];
+    if (answerOrder[next.length - 1] !== item) {
+      setWrong(true);
+      setTapped([]);
+      setTimeout(() => setWrong(false), 1200);
+      return;
+    }
+    setTapped(next);
+  };
+  const solved = tapped.length === answerOrder.length;
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(Brief, null), (m.cards || []).map((c, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: card({
+      padding: 14,
+      marginBottom: 10
+    })
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 900,
+      fontSize: 15
+    }
+  }, c.h), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      marginTop: 6,
+      whiteSpace: "pre-wrap"
+    }
+  }, c.t))), /*#__PURE__*/React.createElement("div", {
+    style: card({
+      padding: 14,
+      background: "#FFF8E9"
+    })
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 900,
+      fontSize: 14
+    }
+  }, "🧩 순서 퀴즈 — 창업의 순서대로 눌러 보세요!"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 8,
+      marginTop: 10
+    }
+  }, shuffled.map(item => {
+    const idx = tapped.indexOf(item);
+    return /*#__PURE__*/React.createElement("button", {
+      key: item,
+      onClick: () => idx < 0 && tap(item),
+      style: {
+        fontFamily: FONT,
+        padding: "10px 14px",
+        borderRadius: 12,
+        fontWeight: 900,
+        fontSize: 14,
+        border: `2px solid ${INK}`,
+        cursor: "pointer",
+        background: idx >= 0 ? GREEN : "#fff",
+        color: idx >= 0 ? "#fff" : INK
+      }
+    }, idx >= 0 ? `${idx + 1}. ` : "", item);
+  })), wrong && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: RED,
+      fontWeight: 900,
+      fontSize: 13,
+      marginTop: 8
+    }
+  }, "순서가 달라요! 처음부터 다시 — 부스를 만들려면 무엇이 먼저 필요할까요?"), solved && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: GREEN,
+      fontWeight: 900,
+      fontSize: 14,
+      marginTop: 8
+    }
+  }, "정답! 이제 이 순서대로 미션이 열립니다.")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 16,
+      textAlign: "center"
+    }
+  }, done ? /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 900,
+      color: GREEN
+    }
+  }, "✅ 미션 클리어!") : /*#__PURE__*/React.createElement(Btn, {
+    tone: "gold",
+    disabled: !solved,
+    onClick: onStamp
+  }, "🔴 도장 찍고 여정 시작!")));
+}
+
+/* ── 1분 피칭 조립 + 타이머 ── */
+function Pitch({
+  progress
+}) {
+  const a = progress.answers;
+  const company = a.wb?.name || "우리";
+  const blank = (v, label) => v || `〔${label} — 미션에서 채워 주세요〕`;
+  const script = `안녕하세요, ${company} 회사입니다!\n저희는 '${blank(a.m1?.star, "M1 문제")}' 문제를 발견했습니다.\n그래서 ${blank(a.m2?.who, "M2 고객")}를 위해 '${blank(a.m3?.name, "M3 제품 이름")}'을 만들었습니다.\n특별한 점은 ${blank(a.m3?.special, "M3 특별한 점")}입니다.\n${blank(a.w2?.copy, "W2 한 줄 카피")}!`;
+  const [sec, setSec] = useState(60);
+  const [running, setRunning] = useState(false);
+  useEffect(() => {
+    if (!running) return;
+    if (sec <= 0) {
+      setRunning(false);
+      return;
+    }
+    const t = setTimeout(() => setSec(s => s - 1), 1000);
+    return () => clearTimeout(t);
+  }, [running, sec]);
+  return /*#__PURE__*/React.createElement("div", {
+    style: card({
+      padding: 14,
+      marginTop: 14,
+      background: "#F3F0FF"
+    })
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 900,
+      color: PRIMARY
+    }
+  }, "🎤 1분 피칭 대본 — 여러분의 답이 자동으로 조립됐어요"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      whiteSpace: "pre-wrap",
+      marginTop: 8,
+      lineHeight: 1.6
+    }
+  }, script), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      alignItems: "center",
+      marginTop: 12
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    small: true,
+    tone: running ? "red" : "green",
+    onClick: () => {
+      setSec(60);
+      setRunning(!running);
+    }
+  }, running ? "정지" : "⏱ 1분 타이머 시작"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 22,
+      fontWeight: 900,
+      color: sec <= 10 ? RED : INK
+    }
+  }, sec, "초")));
+}
+
+/* ── 박람회: 방문 리뷰 + 회고 + 수료증 ── */
+function ExpoBody({
+  m,
+  progress,
+  setProgress,
+  done,
+  onStamp,
+  Brief,
+  config,
+  myTeam
+}) {
+  const reviews = progress.reviews || [];
+  const retro = progress.retro || {};
+  const [draft, setDraft] = useState({
+    booth: "",
+    toTeam: null,
+    by: "",
+    good: "",
+    bad: "",
+    idea: ""
+  });
+  const teamNums = Array.from({
+    length: (config && config.teamCount) || 6
+  }, (_, i) => i + 1).filter(n => n !== myTeam);
+  const canStamp = reviews.length >= 3 && (m.retro || []).every((_, i) => (retro[i] || "").trim());
+  const a = progress.answers;
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(Brief, null), /*#__PURE__*/React.createElement("div", {
+    style: card({
+      padding: 14,
+      marginBottom: 12
+    })
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 900,
+      fontSize: 14
+    }
+  }, "🕵️ 부스 탐방 리뷰 (", reviews.length, "/3 이상)"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gap: 8,
+      marginTop: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 800,
+      color: "#6B76A0",
+      marginBottom: 6
+    }
+  }, "어느 팀 부스를 방문했나요?"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 6
+    }
+  }, teamNums.map(n => /*#__PURE__*/React.createElement("button", {
+    key: n,
+    onClick: () => setDraft({
+      ...draft,
+      toTeam: n,
+      booth: `${n}팀`
+    }),
+    style: {
+      fontFamily: FONT,
+      padding: "6px 14px",
+      borderRadius: 20,
+      fontWeight: 900,
+      fontSize: 13,
+      border: `2px solid ${INK}`,
+      cursor: "pointer",
+      background: draft.toTeam === n ? PRIMARY : "#fff",
+      color: draft.toTeam === n ? "#fff" : INK
+    }
+  }, `${n}팀`)))), /*#__PURE__*/React.createElement(Field, {
+    value: draft.by,
+    ph: "리뷰를 쓴 사람 이름 (선택)",
+    onChange: v => setDraft({
+      ...draft,
+      by: v
+    })
+  }), /*#__PURE__*/React.createElement(Field, {
+    value: draft.good,
+    ph: "👍 좋은 점",
+    onChange: v => setDraft({
+      ...draft,
+      good: v
+    })
+  }), /*#__PURE__*/React.createElement(Field, {
+    value: draft.bad,
+    ph: "🤔 아쉬운 점",
+    onChange: v => setDraft({
+      ...draft,
+      bad: v
+    })
+  }), /*#__PURE__*/React.createElement(Field, {
+    value: draft.idea,
+    ph: "💡 추가 아이디어",
+    onChange: v => setDraft({
+      ...draft,
+      idea: v
+    })
+  }), /*#__PURE__*/React.createElement(Btn, {
+    small: true,
+    disabled: !draft.toTeam || !draft.good,
+    onClick: () => {
+      setProgress(p => ({
+        ...p,
+        reviews: [...(p.reviews || []), {
+          ...draft,
+          _id: uid(),
+          ts: new Date().toISOString()
+        }]
+      }));
+      setDraft({
+        booth: "",
+        toTeam: null,
+        by: draft.by,
+        good: "",
+        bad: "",
+        idea: ""
+      });
+    }
+  }, "리뷰 남기고 방문 도장 받기")), reviews.map((r, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      fontSize: 13,
+      marginTop: 8,
+      background: SKY,
+      borderRadius: 8,
+      padding: 8
+    }
+  }, "🏪 ", r.booth, " — 👍 ", r.good, " ", r.bad && `· 🤔 ${r.bad}`, " ", r.idea && `· 💡 ${r.idea}`))), /*#__PURE__*/React.createElement("div", {
+    style: card({
+      padding: 14,
+      marginBottom: 12
+    })
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 900,
+      fontSize: 14,
+      marginBottom: 8
+    }
+  }, "🪞 회고 — 마지막 두 질문"), (m.retro || []).map((q, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 800,
+      marginBottom: 4
+    }
+  }, q), /*#__PURE__*/React.createElement(Field, {
+    long: true,
+    value: retro[i],
+    onChange: v => setProgress(p => ({
+      ...p,
+      retro: {
+        ...p.retro,
+        [i]: v
+      }
+    }))
+  })))), done && /*#__PURE__*/React.createElement("div", {
+    style: card({
+      padding: 20,
+      background: "#FFFBEB",
+      textAlign: "center"
+    })
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 30
+    }
+  }, "🏆"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 18,
+      fontWeight: 900
+    }
+  }, "CEO 수료증"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      marginTop: 8,
+      lineHeight: 1.7
+    }
+  }, /*#__PURE__*/React.createElement("b", null, a.wb?.name || "우리", " 회사"), "는 '", a.m1?.star || "문제", "'를 발견하고,", /*#__PURE__*/React.createElement("br", null), /*#__PURE__*/React.createElement("b", null, a.m3?.name || "제품"), "을 만들어 박람회에서 손님을 만났습니다.", /*#__PURE__*/React.createElement("br", null), "발명가로 시작해 창업가로 완주했음을 증명합니다."), a.wb?.motto && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      marginTop: 8,
+      fontStyle: "italic"
+    }
+  }, "\"", a.wb.motto, "\"")), !done && /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "center"
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    tone: "gold",
+    disabled: !canStamp,
+    onClick: onStamp
+  }, "🔴 마지막 도장 — 창업 여정 완주!"), !canStamp && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#8A93B5",
+      marginTop: 6
+    }
+  }, "리뷰 3개 + 회고 2문항을 채우면 완주 도장을 받을 수 있어요")));
+}
+
+/* ═══════════ 편집자 모드 ═══════════ */
+function Editor({
+  config,
+  setConfig,
+  exit
+}) {
+  const [tab, setTab] = useState("content");
+  const [sel, setSel] = useState("m0");
+  const [teams, setTeams] = useState(null);
+  const [saved, setSaved] = useState(false);
+  const [note, setNote] = useState("");
+  const [arm, setArm] = useState(null); // 초기화 버튼 2단계 확인용
+  const allIds = [...DAY1, ...WEEK, ...DAY2];
+  const m = config.missions[sel];
+  const upd = patch => setConfig(c => ({
+    ...c,
+    missions: {
+      ...c.missions,
+      [sel]: {
+        ...c.missions[sel],
+        ...patch
+      }
+    }
+  }));
+  const [eSite, setESite] = useState((config.sites || []).length ? 0 : null);
+  const save = async () => {
+    const ok = await sSet("startup-app-config", config);
+    setSaved(ok ? "ok" : "err");
+    setTimeout(() => setSaved(false), 2000);
+  };
+  const loadTeams = async (si = eSite) => {
+    const out = [];
+    for (let ci = 0; ci < config.classes.length; ci++) {
+      const row = await Promise.all(Array.from({
+        length: config.teamCount
+      }, (_, i) => sGet(teamKey(si, ci, i + 1)).then(v => ({
+        ci,
+        n: i + 1,
+        v
+      }))));
+      out.push(...row);
+    }
+    setTeams(out);
+  };
+
+  /* ── 자료 내보내기 · 백업 ── */
+  const exportAll = async () => {
+    setNote("백업 데이터를 모으는 중…");
+    const data = {
+      type: "startup-roadmap-backup",
+      exportedAt: new Date().toISOString(),
+      config,
+      teams: {},
+      explorers: {}
+    };
+    for (const si of siteList(config)) {
+      for (let ci = 0; ci < config.classes.length; ci++) {
+        for (let n = 1; n <= 12; n++) {
+          const v = await sGet(teamKey(si, ci, n));
+          if (v) data.teams[`${sitePrefix(si)}${ci}-${n}`] = v;
+        }
+        for (let n = 1; n <= 30; n++) {
+          const v = await sGet(exKey(si, ci, n));
+          if (v) data.explorers[`${sitePrefix(si)}${ci}-${n}`] = v;
+        }
+      }
+    }
+    downloadFile(JSON.stringify(data, null, 2), `${orgTag()}창업로드맵_전체백업_${dateStr()}.json`, "application/json;charset=utf-8");
+    setNote("✅ 전체 백업 파일(JSON)을 내려받았습니다. 안전한 곳에 보관하세요.");
+  };
+  const exportCSV = async () => {
+    setNote("활동 기록을 모으는 중…");
+    const esc = s => `"${String(s ?? "").replace(/"/g, '""').replace(/\n/g, " ")}"`;
+    const rows = [["학교·기관", "반", "팀", "도장 수", "발견한 문제", "고객", "제품 이름", "특별한 점", "한 줄 카피", "회사명", "격언", "회고1 (AI와 나)", "회고2 (발명가와 창업가)", "부스 리뷰 수", "프롬프트 수", "개선 프롬프트 수", "마지막 활동"].map(esc).join(",")];
+    for (const si of siteList(config)) {
+      for (let ci = 0; ci < config.classes.length; ci++) {
+      for (let n = 1; n <= config.teamCount; n++) {
+        const v = await sGet(teamKey(si, ci, n));
+        if (!v) continue;
+        const a = v.answers || {},
+          st = v.stamps || {};
+        rows.push([siteName(config, si) || config.orgName || "", config.classes[ci], `${n}팀`, Object.keys(st).filter(k => st[k]).length, a.m1?.star, a.m2?.who, a.m3?.name, a.m3?.special, a.w2?.copy, a.wb?.name, a.wb?.motto, (v.retro || {})[0], (v.retro || {})[1], toList(v.reviews).length, toList(v.prompts).length, toList(v.prompts).filter(p => p.phase === "fix").length, v.updatedAt ? new Date(v.updatedAt).toLocaleString("ko-KR") : ""].map(esc).join(","));
+      }
+    }
+    }
+    downloadFile("\uFEFF" + rows.join("\n"), `${orgTag()}창업로드맵_활동기록_${dateStr()}.csv`, "text/csv;charset=utf-8");
+    setNote("✅ 활동 기록(CSV)을 내려받았습니다. 엑셀에서 바로 열 수 있어요.");
+  };
+  /* ── 학교 구분이 없던 예전 기록을 특정 학교로 옮기기 ──
+     예전 키: startup-team-{반}-{팀}      → 새 키: startup-team-s{학교}-{반}-{팀}
+     복사 → 확인 → 원본 삭제 순서로 진행하며, 옮길 곳에 이미 기록이 있으면 건너뜁니다. */
+  const [mvSite, setMvSite] = useState(0);
+  const scanLegacy = async () => {
+    const found = [];
+    for (let ci = 0; ci < config.classes.length; ci++) {
+      for (let n = 1; n <= 12; n++) {
+        const v = await sGet(`startup-team-${ci}-${n}`);
+        if (v) found.push({ kind: "team", ci, n, v });
+      }
+      for (let n = 1; n <= 30; n++) {
+        const v = await sGet(`startup-ex-${ci}-${n}`);
+        if (v) found.push({ kind: "ex", ci, n, v });
+      }
+    }
+    return found;
+  };
+  const migrate = async () => {
+    if (!(config.sites || []).length) {
+      setNote("⚠️ 먼저 위쪽 '수업하는 학교·기관' 칸에 학교를 입력하고 저장해 주세요.");
+      return;
+    }
+    const target = config.sites[mvSite];
+    const found = await scanLegacy();
+    if (!found.length) {
+      setNote("옮길 예전 기록이 없습니다. (이미 옮겼거나, 처음부터 학교를 구분해 저장한 경우입니다)");
+      setArm(null);
+      return;
+    }
+    if (arm !== "move") {
+      setArm("move");
+      setNote(`예전 기록 ${found.length}개(팀 ${found.filter(f => f.kind === "team").length} · 체험 ${found.filter(f => f.kind === "ex").length})를 찾았습니다. 한 번 더 누르면 '${target}'의 기록으로 옮깁니다. 옮기기 전에 전체 백업을 먼저 내려받아 두세요.`);
+      return;
+    }
+    setArm(null);
+    setNote("옮기는 중…");
+    let moved = 0, skipped = 0, failed = 0;
+    for (const f of found) {
+      const newKey = f.kind === "team" ? teamKey(mvSite, f.ci, f.n) : exKey(mvSite, f.ci, f.n);
+      const oldKey = `startup-${f.kind}-${f.ci}-${f.n}`;
+      const exist = await sGet(newKey);
+      if (exist) { skipped++; continue; }
+      const ok = await sSet(newKey, f.v);
+      const check = ok ? await sGet(newKey) : null;
+      if (!check) { failed++; continue; }
+      try { await window.storage.delete(oldKey, true); } catch {}
+      moved++;
+    }
+    loadTeams();
+    setNote(`✅ '${target}'(으)로 ${moved}개를 옮겼습니다.` + (skipped ? ` (이미 기록이 있어 ${skipped}개 건너뜀)` : "") + (failed ? ` ⚠️ ${failed}개 실패 — 다시 시도해 주세요.` : ""));
+  };
+  const orgTag = () => config.orgName ? `${config.orgName.replace(/[\\/:*?"<>|]/g, "")}_` : "";
+  const exportPromptsCSV = async () => {
+    setNote("프롬프트 기록을 모으는 중…");
+    const esc = s => `"${String(s ?? "").replace(/"/g, '""').replace(/\n/g, " ")}"`;
+    const rows = [["학교·기관", "반", "팀", "구분", "미션", "만든 것", "작성자", "고친 이유", "수정 전 프롬프트", "수정 후 프롬프트", "고친 요소", "시각"].map(esc).join(",")];
+    for (const si of siteList(config)) {
+      for (let ci = 0; ci < config.classes.length; ci++) {
+      for (let n = 1; n <= config.teamCount; n++) {
+        const v = await sGet(teamKey(si, ci, n));
+        if (!v || !toList(v.prompts).length) continue;
+        for (const p of toList(v.prompts)) {
+          rows.push([siteName(config, si) || config.orgName || "", config.classes[ci], `${n}팀`, p.phase === "fix" ? "개선" : "제작", p.mission || "", p.kind || "", p.by || "", p.reason || "", p.before || "", p.after || "", (p.changed || []).join(" / "), p.ts ? new Date(p.ts).toLocaleString("ko-KR") : ""].map(esc).join(","));
+        }
+      }
+    }
+    }
+    if (rows.length === 1) {
+      setNote("아직 저장된 프롬프트 기록이 없습니다.");
+      return;
+    }
+    downloadFile("\uFEFF" + rows.join("\n"), `${orgTag()}창업로드맵_프롬프트기록_${dateStr()}.csv`, "text/csv;charset=utf-8");
+    setNote("✅ 프롬프트 기록(CSV)을 내려받았습니다. 제작·개선 프롬프트가 모두 들어 있어요.");
+  };
+  const importBackup = file => {
+    if (!file) return;
+    const r = new FileReader();
+    r.onload = async () => {
+      try {
+        const data = JSON.parse(r.result);
+        if (data.type !== "startup-roadmap-backup" || !data.config) {
+          setNote("⚠️ 이 앱의 백업 파일이 아닙니다.");
+          return;
+        }
+        setNote("백업을 복원하는 중…");
+        await sSet("startup-app-config", data.config);
+        setConfig(deepMerge(DEFAULT_CONFIG, data.config));
+        for (const [k, v] of Object.entries(data.teams || {})) await sSet(`startup-team-${k}`, v);
+        for (const [k, v] of Object.entries(data.explorers || {})) await sSet(`startup-ex-${k}`, v);
+        setNote("✅ 백업을 복원했습니다. 미션 내용과 팀 기록이 모두 돌아왔어요.");
+      } catch {
+        setNote("⚠️ 파일을 읽지 못했습니다. 올바른 백업 JSON인지 확인해 주세요.");
+      }
+    };
+    r.readAsText(file);
+  };
+  const onImg = file => {
+    if (!file) return;
+    if (file.size > 800 * 1024) {
+      setNote("⚠️ 이미지가 너무 큽니다(800KB 이하 권장). 더 작은 이미지를 사용해 주세요.");
+      return;
+    }
+    const r = new FileReader();
+    r.onload = () => {
+      upd({
+        image: r.result
+      });
+      setNote("이미지가 추가됐습니다. 저장 버튼을 눌러 반영하세요.");
+    };
+    r.readAsDataURL(file);
+  };
+  const TA = ({
+    value,
+    onChange,
+    rows = 3,
+    label,
+    ph
+  }) => /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 900,
+      color: "#5A648C",
+      marginBottom: 4
+    }
+  }, label), /*#__PURE__*/React.createElement("textarea", {
+    rows: rows,
+    value: value || "",
+    placeholder: ph || "",
+    onChange: e => onChange(e.target.value),
+    style: {
+      fontFamily: FONT,
+      width: "100%",
+      boxSizing: "border-box",
+      fontSize: 14,
+      border: `2px solid ${INK}`,
+      borderRadius: 10,
+      padding: 10
+    }
+  }));
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: FONT,
+      minHeight: "100vh",
+      background: "#EDEFF7",
+      color: INK,
+      padding: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      maxWidth: 760,
+      margin: "0 auto"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("h2", {
+    style: {
+      fontSize: 20,
+      fontWeight: 900,
+      margin: 0
+    }
+  }, "🔧 편집자 모드"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    small: true,
+    tone: "green",
+    onClick: save
+  }, "저장 (모든 기기에 반영)"), /*#__PURE__*/React.createElement(Btn, {
+    small: true,
+    tone: "ghost",
+    onClick: exit
+  }, "나가기"))), saved === "ok" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: GREEN,
+      fontWeight: 900,
+      fontSize: 13,
+      marginBottom: 8
+    }
+  }, "✅ 저장 완료 — 학생 기기에서 새로고침하면 반영됩니다"), saved === "err" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: RED,
+      fontWeight: 900,
+      fontSize: 13,
+      marginBottom: 8
+    }
+  }, "저장에 실패했습니다. 잠시 후 다시 시도해 주세요."), note && tab === "content" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 800,
+      color: "#9A6B00",
+      marginBottom: 8
+    }
+  }, note), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      marginBottom: 14
+    }
+  }, [["content", "미션 내용 편집"], ["teams", "팀 진행 현황"], ["settings", "설정"]].map(([k, l]) => /*#__PURE__*/React.createElement(Btn, {
+    key: k,
+    small: true,
+    tone: tab === k ? "primary" : "ghost",
+    onClick: () => {
+      setTab(k);
+      if (k === "teams") loadTeams();
+    }
+  }, l))), tab === "content" && /*#__PURE__*/React.createElement("div", {
+    style: card({
+      padding: 16
+    })
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 6,
+      marginBottom: 14
+    }
+  }, allIds.map(id => /*#__PURE__*/React.createElement("button", {
+    key: id,
+    onClick: () => setSel(id),
+    style: {
+      fontFamily: FONT,
+      fontSize: 12,
+      fontWeight: 800,
+      padding: "5px 10px",
+      borderRadius: 8,
+      border: `2px solid ${INK}`,
+      cursor: "pointer",
+      background: sel === id ? PRIMARY : "#fff",
+      color: sel === id ? "#fff" : INK
+    }
+  }, `${mnum(id) ? mnum(id) + " · " : ""}${config.missions[id].title}`))), /*#__PURE__*/React.createElement(TA, {
+    label: "미션 제목",
+    rows: 1,
+    value: m.title,
+    onChange: v => upd({
+      title: v
+    })
+  }), /*#__PURE__*/React.createElement(TA, {
+    label: "배지 (차시 표시)",
+    rows: 1,
+    value: m.badge,
+    onChange: v => upd({
+      badge: v
+    })
+  }), /*#__PURE__*/React.createElement(TA, {
+    label: "미션 브리핑",
+    rows: 3,
+    value: m.briefing,
+    onChange: v => upd({
+      briefing: v
+    })
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 900,
+      color: "#5A648C",
+      marginBottom: 4
+    }
+  }, "브리핑 이미지 (선택)"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center",
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    placeholder: "이미지 URL 붙여넣기",
+    value: (m.image || "").startsWith("data:") ? "(업로드된 이미지)" : m.image || "",
+    onChange: e => upd({
+      image: e.target.value
+    }),
+    style: {
+      fontFamily: FONT,
+      flex: 1,
+      minWidth: 200,
+      fontSize: 13,
+      border: `2px solid ${INK}`,
+      borderRadius: 10,
+      padding: 8
+    }
+  }), /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontFamily: FONT,
+      fontSize: 12,
+      fontWeight: 800,
+      cursor: "pointer",
+      background: "#fff",
+      border: `2px solid ${INK}`,
+      borderRadius: 10,
+      padding: "8px 12px"
+    }
+  }, "📁 파일 업로드", /*#__PURE__*/React.createElement("input", {
+    type: "file",
+    accept: "image/*",
+    style: {
+      display: "none"
+    },
+    onChange: e => onImg(e.target.files[0])
+  })), m.image && /*#__PURE__*/React.createElement(Btn, {
+    small: true,
+    tone: "red",
+    onClick: () => upd({
+      image: ""
+    })
+  }, "이미지 제거")), m.image && /*#__PURE__*/React.createElement("img", {
+    src: m.image,
+    alt: "",
+    style: {
+      maxWidth: 200,
+      marginTop: 8,
+      borderRadius: 8,
+      border: `2px solid ${INK}`
+    }
+  })), (m.questions || []).map((q, i) => /*#__PURE__*/React.createElement("div", {
+    key: q.id,
+    style: {
+      background: "#F7F9FF",
+      borderRadius: 10,
+      padding: 10,
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement(TA, {
+    label: `질문 ${i + 1}`,
+    rows: 2,
+    value: q.q,
+    onChange: v => {
+      const qs = [...m.questions];
+      qs[i] = {
+        ...qs[i],
+        q: v
+      };
+      upd({
+        questions: qs
+      });
+    }
+  }), /*#__PURE__*/React.createElement(TA, {
+    label: "힌트 (한 줄에 하나씩)",
+    rows: 2,
+    value: (q.hints || []).join("\n"),
+    onChange: v => {
+      const qs = [...m.questions];
+      qs[i] = {
+        ...qs[i],
+        hints: v.split("\n").filter(Boolean)
+      };
+      upd({
+        questions: qs
+      });
+    }
+  }))), (m.cards || []).map((c, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      background: "#F7F9FF",
+      borderRadius: 10,
+      padding: 10,
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement(TA, {
+    label: `투어 카드 ${i + 1} 제목`,
+    rows: 1,
+    value: c.h,
+    onChange: v => {
+      const cs = [...m.cards];
+      cs[i] = {
+        ...cs[i],
+        h: v
+      };
+      upd({
+        cards: cs
+      });
+    }
+  }), /*#__PURE__*/React.createElement(TA, {
+    label: "내용",
+    rows: 4,
+    value: c.t,
+    onChange: v => {
+      const cs = [...m.cards];
+      cs[i] = {
+        ...cs[i],
+        t: v
+      };
+      upd({
+        cards: cs
+      });
+    }
+  }))), (m.steps || []).map((s, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      background: "#F7F9FF",
+      borderRadius: 10,
+      padding: 10,
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement(TA, {
+    label: `단계 ${i + 1} 제목`,
+    rows: 1,
+    value: s.h,
+    onChange: v => {
+      const ss = [...m.steps];
+      ss[i] = {
+        ...ss[i],
+        h: v
+      };
+      upd({
+        steps: ss
+      });
+    }
+  }), /*#__PURE__*/React.createElement(TA, {
+    label: "설명",
+    rows: 2,
+    value: s.t,
+    onChange: v => {
+      const ss = [...m.steps];
+      ss[i] = {
+        ...ss[i],
+        t: v
+      };
+      upd({
+        steps: ss
+      });
+    }
+  }), /*#__PURE__*/React.createElement(TA, {
+    label: "프롬프트 시작 문장 (비우면 숨김)",
+    rows: 2,
+    value: s.prompt,
+    onChange: v => {
+      const ss = [...m.steps];
+      ss[i] = {
+        ...ss[i],
+        prompt: v
+      };
+      upd({
+        steps: ss
+      });
+    }
+  }))), m.check && /*#__PURE__*/React.createElement(TA, {
+    label: "클리어 체크리스트 (한 줄에 하나씩)",
+    rows: 3,
+    value: m.check.join("\n"),
+    onChange: v => upd({
+      check: v.split("\n").filter(Boolean)
+    })
+  })), tab === "teams" && /*#__PURE__*/React.createElement("div", {
+    style: card({
+      padding: 16
+    })
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 900
+    }
+  }, "팀 진행 현황"), /*#__PURE__*/React.createElement(Btn, {
+    small: true,
+    tone: "ghost",
+    onClick: loadTeams
+  }, "새로고침")), !teams && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13
+    }
+  }, "불러오는 중…"), teams && teams.map(({
+    ci,
+    n,
+    v
+  }) => {
+    const st = v?.stamps || {};
+    const cnt = Object.keys(st).filter(k => st[k]).length;
+    const w1 = st.w1,
+      w2 = st.w2;
+    const light = w1 && w2 ? GREEN : w1 || w2 ? GOLD : RED;
+    return /*#__PURE__*/React.createElement("div", {
+      key: `${ci}-${n}`
+    }, n === 1 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontWeight: 900,
+        fontSize: 13,
+        color: PRIMARY,
+        marginTop: ci === 0 ? 0 : 12,
+        marginBottom: 2
+      }
+    }, config.classes[ci]), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "8px 0",
+        borderBottom: "1px solid #E3E7F3",
+        fontSize: 13
+      }
+    }, /*#__PURE__*/React.createElement("b", {
+      style: {
+        width: 52
+      }
+    }, n, "팀"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        width: 88
+      }
+    }, "도장 ", cnt, "/15"), /*#__PURE__*/React.createElement("span", {
+      style: {
+        width: 96,
+        fontSize: 12
+      }
+    }, "🔑 ", v?.pw ? v.pw : "미설정"), v?.pw && /*#__PURE__*/React.createElement("button", {
+      onClick: async () => {
+        await sSet(teamKey(eSite, ci, n), {
+          ...v,
+          pw: null
+        });
+        loadTeams();
+      },
+      style: {
+        fontFamily: FONT,
+        fontSize: 11,
+        fontWeight: 800,
+        border: `1.5px solid ${INK}`,
+        borderRadius: 8,
+        background: "#fff",
+        cursor: "pointer",
+        padding: "2px 8px"
+      }
+    }, "비번 초기화"), /*#__PURE__*/React.createElement("span", {
+      title: "필수 주중 미션(W1 프로토타입 · W2 포스터)",
+      style: {
+        width: 14,
+        height: 14,
+        borderRadius: "50%",
+        background: v ? light : "#C6CCE0",
+        border: `2px solid ${INK}`
+      }
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        flex: 1,
+        color: "#5A648C",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap"
+      }
+    }, v?.answers?.m3?.name ? `제품: ${v.answers.m3.name}` : v ? "진행 중" : "아직 시작 안 함", v?.answers?.m1?.star ? ` · 문제: ${v.answers.m1.star}` : ""), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: "#9AA3C2"
+      }
+    }, v?.updatedAt ? new Date(v.updatedAt).toLocaleString("ko-KR", {
+      month: "numeric",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit"
+    }) : "")));
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#8A93B5",
+      marginTop: 10
+    }
+  }, "신호등: 🔴 필수 주중 미션 미완료 · 🟡 1개 완료 · 🟢 W1+W2 완료 · 🔑 모둠이 만든 비밀번호 (잊어버린 팀은 '비번 초기화' 후 다시 만들게 하세요)")), tab === "settings" && /*#__PURE__*/React.createElement("div", {
+    style: card({
+      padding: 16
+    })
+  }, /*#__PURE__*/React.createElement(TA, {
+    label: "운영 센터 이름 (화면 상단과 내려받는 파일 이름에 표시됩니다)",
+    rows: 1,
+    value: config.orgName || "",
+    onChange: v => setConfig(c => ({
+      ...c,
+      orgName: v.trim()
+    }))
+  }), /*#__PURE__*/React.createElement(TA, {
+    label: "수업하는 학교·기관 (한 줄에 하나씩 — 학생이 첫 화면에서 선택합니다. 비우면 선택 단계가 없어집니다)\n※ 기록은 학교별로 따로 저장됩니다. 이미 수업한 학교의 순서를 바꾸거나 지우면 기록을 찾지 못하니, 새 학교는 맨 아래에 추가하세요.",
+    ph: "SW미래채움 초등학교\nSW미래채움 제주센터\n조천초등학교",
+    rows: 4,
+    value: (config.sites || []).join("\n"),
+    onChange: v => setConfig(c => ({
+      ...c,
+      sites: v.split("\n").map(x => x.trim()).filter(Boolean).slice(0, 20)
+    }))
+  }), /*#__PURE__*/React.createElement(TA, {
+    label: "앱 제목",
+    rows: 1,
+    value: config.appTitle,
+    onChange: v => setConfig(c => ({
+      ...c,
+      appTitle: v
+    }))
+  }), /*#__PURE__*/React.createElement(TA, {
+    label: "편집자 PIN",
+    rows: 1,
+    value: config.pin,
+    onChange: v => setConfig(c => ({
+      ...c,
+      pin: v
+    }))
+  }), /*#__PURE__*/React.createElement(TA, {
+    label: "반 이름 (한 줄에 하나씩 — 반을 추가·삭제할 수 있어요)",
+    rows: 3,
+    value: config.classes.join("\n"),
+    onChange: v => setConfig(c => ({
+      ...c,
+      classes: v.split("\n").filter(Boolean).slice(0, 8)
+    }))
+  }), /*#__PURE__*/React.createElement(TA, {
+    label: "반별 팀 수 (숫자, 최대 12)",
+    rows: 1,
+    value: String(config.teamCount),
+    onChange: v => setConfig(c => ({
+      ...c,
+      teamCount: Math.max(1, Math.min(12, parseInt(v) || 6))
+    }))
+  }), /*#__PURE__*/React.createElement(TA, {
+    label: "반별 개인 체험 슬롯 수 (숫자, 최대 30 — 학생 16 + 담임 + 시연 = 18 권장)",
+    rows: 1,
+    value: String(config.explorerCount),
+    onChange: v => setConfig(c => ({
+      ...c,
+      explorerCount: Math.max(1, Math.min(30, parseInt(v) || 18))
+    }))
+  }), /*#__PURE__*/React.createElement(TA, {
+    label: "회사 성장 단계 (한 줄에 하나: 도장수,아이콘,이름 — 예: 0,🪑,내 방 책상 창업)",
+    rows: 5,
+    value: (config.levels || []).map(l => `${l.min},${l.icon},${l.name}`).join("\n"),
+    onChange: v => setConfig(c => ({
+      ...c,
+      levels: v.split("\n").filter(Boolean).map(line => {
+        const parts = line.split(",");
+        return {
+          min: Math.max(0, parseInt(parts[0]) || 0),
+          icon: (parts[1] || "⭐").trim(),
+          name: (parts.slice(2).join(",") || "단계").trim()
+        };
+      })
+    }))
+  }), /*#__PURE__*/React.createElement(TA, {
+    label: "질문 룰렛 카드 (한 줄에 하나씩)",
+    rows: 6,
+    value: config.roulette.join("\n"),
+    onChange: v => setConfig(c => ({
+      ...c,
+      roulette: v.split("\n").filter(Boolean)
+    }))
+  }), (config.sites || []).length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#FFFBEB",
+      border: `2px dashed ${GOLD}`,
+      borderRadius: 12,
+      padding: 12,
+      marginTop: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 900,
+      fontSize: 13,
+      marginBottom: 4
+    }
+  }, "📦 예전 기록 옮기기"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#6B6244",
+      lineHeight: 1.6,
+      marginBottom: 8
+    }
+  }, "학교 선택 단계를 쓰기 전에 저장된 기록은 학교 구분이 없어서 학생 화면에 보이지 않습니다. 아래에서 학교를 고르고 버튼을 누르면 그 학교의 기록으로 옮겨집니다. 옮기기 전에 ", /*#__PURE__*/React.createElement("b", null, "전체 백업(JSON)"), "을 먼저 내려받아 두세요."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6,
+      flexWrap: "wrap",
+      marginBottom: 8
+    }
+  }, (config.sites || []).map((nm, i) => /*#__PURE__*/React.createElement("button", {
+    key: i,
+    onClick: () => {
+      setMvSite(i);
+      setArm(null);
+    },
+    style: {
+      fontFamily: FONT,
+      padding: "6px 12px",
+      borderRadius: 20,
+      fontWeight: 800,
+      fontSize: 12,
+      border: `2px solid ${INK}`,
+      cursor: "pointer",
+      background: mvSite === i ? PRIMARY : "#fff",
+      color: mvSite === i ? "#fff" : INK
+    }
+  }, nm))), /*#__PURE__*/React.createElement(Btn, {
+    small: true,
+    tone: arm === "move" ? "red" : "gold",
+    onClick: migrate
+  }, arm === "move" ? "⚠️ 한 번 더 누르면 옮깁니다!" : "예전 기록을 이 학교로 옮기기")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      marginTop: 8,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    small: true,
+    tone: "gold",
+    onClick: async () => {
+      if (arm !== "ex") {
+        setArm("ex");
+        setNote("한 번 더 누르면 모든 반의 체험(연습) 기록이 삭제됩니다. 팀 프로젝트 기록은 유지돼요.");
+        return;
+      }
+      setArm(null);
+      for (const si of siteList(config)) for (let ci = 0; ci < 8; ci++) for (let n = 1; n <= 30; n++) {
+        try {
+          await window.storage.delete(exKey(si, ci, n), true);
+        } catch {}
+      }
+      setNote("✅ 체험 기록을 초기화했습니다. 이제 팀 프로젝트를 깨끗하게 시작할 수 있어요.");
+    }
+  }, arm === "ex" ? "⚠️ 한 번 더 누르면 삭제!" : "체험(연습) 기록만 초기화"), /*#__PURE__*/React.createElement(Btn, {
+    small: true,
+    tone: "red",
+    onClick: async () => {
+      if (arm !== "team") {
+        setArm("team");
+        setNote("한 번 더 누르면 모든 반, 모든 팀의 프로젝트 기록이 삭제됩니다. 되돌릴 수 없어요.");
+        return;
+      }
+      setArm(null);
+      for (const si of siteList(config)) for (let ci = 0; ci < 8; ci++) for (let n = 1; n <= 12; n++) {
+        try {
+          await window.storage.delete(teamKey(si, ci, n), true);
+        } catch {}
+      }
+      setNote("✅ 팀 기록을 초기화했습니다.");
+    }
+  }, arm === "team" ? "⚠️ 한 번 더 누르면 삭제!" : "모든 팀 기록 초기화"), /*#__PURE__*/React.createElement(Btn, {
+    small: true,
+    tone: "red",
+    onClick: async () => {
+      if (arm !== "cfg") {
+        setArm("cfg");
+        setNote("한 번 더 누르면 편집한 미션 내용이 모두 기본값으로 돌아갑니다.");
+        return;
+      }
+      setArm(null);
+      try {
+        await window.storage.delete("startup-app-config", true);
+      } catch {}
+      setConfig(DEFAULT_CONFIG);
+      setNote("✅ 기본 내용으로 되돌렸습니다. 저장 버튼은 누르지 않아도 됩니다.");
+    }
+  }, arm === "cfg" ? "⚠️ 한 번 더 누르면 복원!" : "미션 내용 기본값 복원")), note && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 800,
+      color: note.startsWith("✅") ? GREEN : "#9A6B00",
+      marginTop: 10
+    }
+  }, note), /*#__PURE__*/React.createElement("div", {
+    style: {
+      borderTop: `2px dashed ${INK}`,
+      marginTop: 16,
+      paddingTop: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 900,
+      marginBottom: 4
+    }
+  }, "📦 자료 내보내기 · 백업"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#5A648C",
+      marginBottom: 10
+    }
+  }, "현재 저장 방식: ", /*#__PURE__*/React.createElement("b", null, window.STORAGE_MODE === "firebase" ? "🔥 Firebase 연결됨 (모든 기기 공유)" : window.STORAGE_MODE === "local" ? "💾 이 기기에만 저장 (Firebase 미설정)" : "⚠️ 임시 저장 (새로고침 시 사라짐)")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    small: true,
+    tone: "primary",
+    onClick: exportAll
+  }, "전체 백업 내려받기 (JSON)"), /*#__PURE__*/React.createElement(Btn, {
+    small: true,
+    tone: "green",
+    onClick: exportCSV
+  }, "활동 기록 내려받기 (CSV)"), /*#__PURE__*/React.createElement(Btn, {
+    small: true,
+    tone: "green",
+    onClick: exportPromptsCSV
+  }, "프롬프트 기록 내려받기 (CSV)"), /*#__PURE__*/React.createElement("label", {
+    style: {
+      fontFamily: FONT,
+      fontSize: 13,
+      fontWeight: 800,
+      cursor: "pointer",
+      background: "#fff",
+      border: `2px solid ${INK}`,
+      borderRadius: 12,
+      padding: "6px 12px",
+      boxShadow: `3px 3px 0 ${INK}`
+    }
+  }, "백업 불러오기 (JSON)", /*#__PURE__*/React.createElement("input", {
+    type: "file",
+    accept: ".json,application/json",
+    style: {
+      display: "none"
+    },
+    onChange: e => {
+      importBackup(e.target.files[0]);
+      e.target.value = "";
+    }
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#8A93B5",
+      marginTop: 8,
+      lineHeight: 1.6
+    }
+  }, "· ", /*#__PURE__*/React.createElement("b", null, "전체 백업(JSON)"), ": 편집한 미션 내용 + 모든 반의 팀·체험 기록. 수업 전후로 내려받아 보관하고, 문제가 생기면 '백업 불러오기'로 복원하세요.", /*#__PURE__*/React.createElement("br", null), "· ", /*#__PURE__*/React.createElement("b", null, "활동 기록(CSV)"), ": 팀별 답변(문제·고객·제품·회고 등)을 표로 정리한 파일. 엑셀에서 열어 평가·생활기록 참고 자료로 쓸 수 있어요.")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      borderTop: `2px dashed ${INK}`,
+      marginTop: 14,
+      paddingTop: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 900,
+      marginBottom: 6
+    }
+  }, "🌐 배포 안내 (GitHub + Firebase)"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#5A648C",
+      lineHeight: 1.7
+    }
+  }, "① 이 HTML 파일을 열어 상단의 ", /*#__PURE__*/React.createElement("b", null, "FIREBASE_CONFIG"), "에 Firebase 웹앱 구성을 붙여넣고, ", /*#__PURE__*/React.createElement("b", null, "ROOM_ID"), "를 우리 학급만의 긴 코드로 바꾸세요.", /*#__PURE__*/React.createElement("br", null), "② Firebase 콘솔에서 ", /*#__PURE__*/React.createElement("b", null, "Realtime Database"), "를 만들고, 규칙에서 rooms 경로의 읽기/쓰기를 허용하세요.", /*#__PURE__*/React.createElement("br", null), "③ 파일 이름을 ", /*#__PURE__*/React.createElement("b", null, "index.html"), "로 바꿔 GitHub 저장소에 올리고, Settings → Pages에서 배포하면 학생들은 주소만으로(로그인 없이) 접속합니다.", /*#__PURE__*/React.createElement("br", null), "④ FIREBASE_CONFIG를 비워 두면 각 기기에만 저장되는 오프라인 모드로 동작합니다 (기기 간 공유·교사 대시보드 불가).")))));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>
